@@ -11,6 +11,8 @@ import type {
   StrategyPerformance,
   ActiveMarketState,
   WindowOutcome,
+  ArbWindowState,
+  ArbStats,
 } from "@/types";
 import { DEFAULT_SETTINGS } from "@/types";
 
@@ -44,6 +46,15 @@ const DEFAULT_STATE: BotState = {
   },
   clobReady: false,
   alerts: [],
+  arbState: null,
+  arbStats: {
+    windowsPlayed: 0,
+    bothSidesFilled: 0,
+    oneSideFilled: 0,
+    neitherFilled: 0,
+    totalPnl: 0,
+    avgProfitPerWindow: 0,
+  },
 };
 
 export function useBotState() {

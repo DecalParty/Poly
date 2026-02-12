@@ -11,6 +11,7 @@ const PAGE_SIZE = 20;
 
 const STRATEGY_LABELS: Record<string, string> = {
   highConfidence: "High Conf",
+  arbitrage: "Arbitrage",
 };
 
 export default function TradeHistory({ trades }: TradeHistoryProps) {
@@ -63,6 +64,7 @@ export default function TradeHistory({ trades }: TradeHistoryProps) {
             options={[
               { value: "all", label: "All Strategies" },
               { value: "highConfidence", label: "High Conf" },
+              { value: "arbitrage", label: "Arbitrage" },
             ]}
           />
           <FilterSelect

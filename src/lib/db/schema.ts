@@ -59,8 +59,14 @@ export const settings = sqliteTable("settings", {
   highConfBuyInterval: integer("high_conf_buy_interval").notNull().default(5),
   highConfStopLoss: real("high_conf_stop_loss").notNull().default(0.79),
   // Arbitrage strategy
-  maxCombinedCost: real("max_combined_cost").notNull().default(0.97),
   arbitrageEnabled: integer("arbitrage_enabled", { mode: "boolean" }).notNull().default(true),
+  arbMaxPerWindow: real("arb_max_per_window").notNull().default(10),
+  arbBudgetUp: real("arb_budget_up"),
+  arbBudgetDown: real("arb_budget_down"),
+  arbLadderLevels: text("arb_ladder_levels").notNull().default('[{"price":0.48,"allocation":0.40},{"price":0.46,"allocation":0.35},{"price":0.44,"allocation":0.25}]'),
+  maxCombinedCost: real("max_combined_cost").notNull().default(0.97),
+  arbCancelBeforeEnd: integer("arb_cancel_before_end").notNull().default(120),
+  arbMarket: text("arb_market").notNull().default("BTC"),
   // Bet sizing
   betAmount: real("bet_amount").notNull().default(2.00),
 });

@@ -116,7 +116,7 @@ let lastOutcomesJson = "";
 
 function ensurePriceBroadcast() {
   if (priceBroadcastInterval) return;
-  // Broadcast active-market prices from scanner every 100ms
+  // Broadcast active-market prices from scanner every 2s (reduced for VPS performance)
   priceBroadcastInterval = setInterval(() => {
     if (sseListeners.size === 0) return;
     const settings = getCachedSettings();
@@ -139,7 +139,7 @@ function ensurePriceBroadcast() {
       },
       timestamp: new Date().toISOString(),
     });
-  }, 100);
+  }, 2000);
 }
 
 export function subscribeSSE(listener: (event: SSEEvent) => void): () => void {
@@ -702,11 +702,11 @@ export function startBot(): { success: boolean; error?: string } {
   // Initial market fetch
   refreshMarket();
 
-  // Main trading loop - runs every 1 second for fast DCA execution
-  loopInterval = setInterval(tradingLoop, 1000);
+  // Main trading loop - runs every 3 seconds (optimized for VPS)
+  loopInterval = setInterval(tradingLoop, 3000);
 
-  // Market structure refresh - every 10 seconds
-  marketRefreshInterval = setInterval(refreshMarket, 10000);
+  // Market structure refresh - every 30 seconds (reduced for VPS)
+  marketRefreshInterval = setInterval(refreshMarket, 30000);
 
   broadcastState();
   broadcastLog("Bot started");

@@ -9,6 +9,7 @@ import type {
   AssetPerformance,
   StrategyPerformance,
   DailyPnlPoint,
+  LadderLevel,
 } from "@/types";
 import { DEFAULT_SETTINGS } from "@/types";
 
@@ -318,6 +319,17 @@ export function getSettings(): BotSettings {
     enabledAssets = ["BTC"];
   }
 
+  let arbLadderLevels: LadderLevel[] = [
+    { price: 0.48, allocation: 0.40 },
+    { price: 0.46, allocation: 0.35 },
+    { price: 0.44, allocation: 0.25 },
+  ];
+  try {
+    arbLadderLevels = JSON.parse(row.arbLadderLevels || '[]');
+  } catch {
+    // keep defaults
+  }
+
   return {
     paperTrading: row.paperTrading,
     totalBankroll: row.totalBankroll,
@@ -334,6 +346,14 @@ export function getSettings(): BotSettings {
     highConfEnabled: row.highConfEnabled,
     highConfBuyAmount: row.highConfBuyAmount,
     highConfBuyInterval: row.highConfBuyInterval,
+    arbEnabled: row.arbitrageEnabled,
+    arbMaxPerWindow: row.arbMaxPerWindow,
+    arbBudgetUp: row.arbBudgetUp ?? null,
+    arbBudgetDown: row.arbBudgetDown ?? null,
+    arbLadderLevels,
+    arbMaxCombinedCost: row.maxCombinedCost,
+    arbCancelBeforeEnd: row.arbCancelBeforeEnd,
+    arbMarket: (row.arbMarket as MarketAsset) || "BTC",
   };
 }
 
@@ -355,6 +375,14 @@ export function updateSettings(s: Partial<BotSettings>): BotSettings {
   if (s.highConfEnabled !== undefined) setObj.highConfEnabled = s.highConfEnabled;
   if (s.highConfBuyAmount !== undefined) setObj.highConfBuyAmount = s.highConfBuyAmount;
   if (s.highConfBuyInterval !== undefined) setObj.highConfBuyInterval = s.highConfBuyInterval;
+  if (s.arbEnabled !== undefined) setObj.arbitrageEnabled = s.arbEnabled;
+  if (s.arbMaxPerWindow !== undefined) setObj.arbMaxPerWindow = s.arbMaxPerWindow;
+  if (s.arbBudgetUp !== undefined) setObj.arbBudgetUp = s.arbBudgetUp;
+  if (s.arbBudgetDown !== undefined) setObj.arbBudgetDown = s.arbBudgetDown;
+  if (s.arbLadderLevels !== undefined) setObj.arbLadderLevels = JSON.stringify(s.arbLadderLevels);
+  if (s.arbMaxCombinedCost !== undefined) setObj.maxCombinedCost = s.arbMaxCombinedCost;
+  if (s.arbCancelBeforeEnd !== undefined) setObj.arbCancelBeforeEnd = s.arbCancelBeforeEnd;
+  if (s.arbMarket !== undefined) setObj.arbMarket = s.arbMarket;
 
   if (Object.keys(setObj).length > 0) {
     db.update(schema.settings)

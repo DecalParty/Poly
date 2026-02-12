@@ -268,12 +268,12 @@ export function startMarketScanner(enabledAssets: MarketAsset[]) {
     logger.error(`[Scanner] Initial scan failed: ${err}`);
   });
 
-  // Poll every 1 second for fresh prices
+  // Poll every 5 seconds for fresh prices (lower CPU/network usage on VPS)
   scanInterval = setInterval(() => {
     scanMarkets(enabledAssets).catch((err) => {
       logger.error(`[Scanner] Scan failed: ${err}`);
     });
-  }, 1000);
+  }, 5000);
 
   logger.info(`[Scanner] Started for assets: ${enabledAssets.join(", ")}`);
 }

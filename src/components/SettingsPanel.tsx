@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import type { BotSettings, BotStatus, MarketAsset, CircuitBreakerState } from "@/types";
+import type { BotSettings, BotStatus, MarketAsset, CircuitBreakerState, LadderLevel } from "@/types";
 import { ALL_ASSETS } from "@/types";
 
 interface SettingsPanelProps {
@@ -28,6 +28,7 @@ export default function SettingsPanel({ settings, botStatus, onSave, circuitBrea
     capital: false,
     markets: false,
     strategy: false,
+    arbitrage: false,
   });
 
   useEffect(() => { setForm(settings); }, [settings]);
@@ -185,6 +186,195 @@ export default function SettingsPanel({ settings, botStatus, onSave, circuitBrea
             <Field label="Entry Max" value={form.highConfEntryMax} field="highConfEntryMax" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
             <Field label="Time Min" value={form.highConfTimeMin} field="highConfTimeMin" onChange={handleNumChange} disabled={disabled} suffix="sec" step="10" />
             <Field label="Time Max" value={form.highConfTimeMax} field="highConfTimeMax" onChange={handleNumChange} disabled={disabled} suffix="sec" step="10" />
+          </div>
+        )}
+      </Section>
+
+      {/* ── Arbitrage ── */}
+      <Section title="Arbitrage" open={openSections.arbitrage} onToggle={() => toggleSection("arbitrage")}
+        badge={form.arbEnabled
+          ? { text: "ACTIVE", color: "text-blue-400 bg-blue-400/10" }
+          : { text: "OFF", color: "text-gray-500 bg-white/[0.04]" }
+        }
+      >
+        <div className="flex items-center justify-between mb-4 p-3 rounded-xl bg-white/[0.02] border border-white/[0.04]">
+          <div>
+            <span className="text-[12px] font-medium text-gray-300">Both-Sides Arb</span>
+            <p className="text-[10px] text-gray-500 mt-0.5">Limit buy both UP &amp; DOWN — guaranteed profit if combined cost &lt; $1</p>
+          </div>
+          <Toggle value={form.arbEnabled} onChange={(v) => handleBoolChange("arbEnabled", v)} disabled={disabled} />
+        </div>
+        {form.arbEnabled && (
+          <div className="space-y-3">
+            {/* Market selector */}
+            <div>
+              <label className="block text-[10px] text-gray-500 font-medium mb-1.5 tracking-wide">Market</label>
+              <div className="flex gap-2">
+                {ALL_ASSETS.map((asset) => (
+                  <button
+                    key={asset}
+                    onClick={() => !disabled && setForm((prev) => ({ ...prev, arbMarket: asset }))}
+                    className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition-all ${
+                      form.arbMarket === asset
+                        ? "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                        : "bg-white/[0.02] text-gray-500 border-white/[0.06] hover:border-white/[0.1]"
+                    } ${disabled ? "opacity-30 cursor-not-allowed" : "cursor-pointer"}`}
+                  >
+                    {asset}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Core settings */}
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Max Per Window" value={form.arbMaxPerWindow} field="arbMaxPerWindow" onChange={handleNumChange} disabled={disabled} prefix="$" step="1" />
+              <Field label="Max Combined Cost" value={form.arbMaxCombinedCost} field="arbMaxCombinedCost" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
+              <Field label="Cancel Before End" value={form.arbCancelBeforeEnd} field="arbCancelBeforeEnd" onChange={handleNumChange} disabled={disabled} suffix="sec" step="10" />
+            </div>
+
+            {/* Per-side budget */}
+            <div className="rounded-xl bg-white/[0.015] border border-white/[0.04] p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[10px] text-gray-500 font-semibold">Budget Per Side</p>
+                <button
+                  onClick={() => {
+                    if (disabled) return;
+                    const isCustom = form.arbBudgetUp != null && form.arbBudgetUp > 0;
+                    if (isCustom) {
+                      setForm((prev) => ({ ...prev, arbBudgetUp: null, arbBudgetDown: null }));
+                    } else {
+                      const half = form.arbMaxPerWindow / 2;
+                      setForm((prev) => ({ ...prev, arbBudgetUp: half, arbBudgetDown: half }));
+                    }
+                  }}
+                  className={`text-[9px] font-semibold px-2 py-0.5 rounded-md border transition-all ${
+                    form.arbBudgetUp != null && form.arbBudgetUp > 0
+                      ? "text-blue-400 bg-blue-400/10 border-blue-500/20"
+                      : "text-gray-500 bg-white/[0.03] border-white/[0.06] hover:border-white/[0.1]"
+                  } ${disabled ? "opacity-30 cursor-not-allowed" : "cursor-pointer"}`}
+                >
+                  {form.arbBudgetUp != null && form.arbBudgetUp > 0 ? "CUSTOM" : "AUTO"}
+                </button>
+              </div>
+              {form.arbBudgetUp != null && form.arbBudgetUp > 0 ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="UP Budget" value={form.arbBudgetUp} field="arbBudgetUp" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.5" />
+                  <Field label="DOWN Budget" value={form.arbBudgetDown ?? form.arbMaxPerWindow / 2} field="arbBudgetDown" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.5" />
+                </div>
+              ) : (
+                <p className="text-[10px] text-gray-500">
+                  Even split: <span className="mono text-gray-300">${(form.arbMaxPerWindow / 2).toFixed(2)}</span> per side
+                </p>
+              )}
+              {form.arbBudgetUp != null && form.arbBudgetUp > 0 && (() => {
+                const total = (form.arbBudgetUp ?? 0) + (form.arbBudgetDown ?? 0);
+                const overMax = total > form.arbMaxPerWindow;
+                return (
+                  <p className={`text-[9px] mt-2 ${overMax ? "text-red-400" : "text-gray-600"}`}>
+                    Total: ${total.toFixed(2)}{overMax ? " (exceeds max per window)" : ` of $${form.arbMaxPerWindow.toFixed(2)}`}
+                  </p>
+                );
+              })()}
+            </div>
+
+            {/* Ladder Levels */}
+            <div className="rounded-xl bg-white/[0.015] border border-white/[0.04] p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[10px] text-gray-500 font-semibold">Ladder Levels</p>
+                {!disabled && (
+                  <button
+                    onClick={() => {
+                      setForm((prev) => ({
+                        ...prev,
+                        arbLadderLevels: [...prev.arbLadderLevels, { price: 0.42, allocation: 0.10 }],
+                      }));
+                    }}
+                    className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    + Add Level
+                  </button>
+                )}
+              </div>
+
+              {/* Header */}
+              <div className="flex items-center gap-2 mb-1 text-[9px] text-gray-600 uppercase tracking-wider">
+                <span className="w-6" />
+                <span className="w-20 text-center">Price</span>
+                <span className="w-3" />
+                <span className="w-16 text-center">Alloc %</span>
+                <span className="w-16 text-center">$/Side</span>
+                <span className="w-6" />
+              </div>
+
+              {(form.arbLadderLevels || []).map((level, i) => {
+                const upBudget = (form.arbBudgetUp != null && form.arbBudgetUp > 0) ? form.arbBudgetUp : form.arbMaxPerWindow / 2;
+                const downBudget = (form.arbBudgetDown != null && form.arbBudgetDown > 0) ? form.arbBudgetDown : form.arbMaxPerWindow / 2;
+                const avgPerSide = (upBudget + downBudget) / 2;
+                const dollarAtLevel = avgPerSide * level.allocation;
+                return (
+                  <div key={i} className="flex items-center gap-2 mb-1.5">
+                    <span className="text-[10px] text-gray-600 w-6">L{i + 1}</span>
+                    <div className="relative w-20">
+                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[9px] text-gray-600">$</span>
+                      <input
+                        type="number" step="0.01" value={level.price}
+                        onChange={(e) => {
+                          const updated = [...form.arbLadderLevels];
+                          updated[i] = { ...updated[i], price: parseFloat(e.target.value) || 0 };
+                          setForm((prev) => ({ ...prev, arbLadderLevels: updated }));
+                        }}
+                        disabled={disabled}
+                        className="w-full mono text-[11px] py-1 pl-5 pr-1 rounded-lg bg-black/30 border border-white/[0.06] text-gray-200 focus:border-blue-500/30 focus:outline-none disabled:opacity-30"
+                      />
+                    </div>
+                    <span className="text-[10px] text-gray-600 w-3 text-center">@</span>
+                    <div className="relative w-16">
+                      <input
+                        type="number" step="5" value={Math.round(level.allocation * 100)}
+                        onChange={(e) => {
+                          const updated = [...form.arbLadderLevels];
+                          updated[i] = { ...updated[i], allocation: (parseFloat(e.target.value) || 0) / 100 };
+                          setForm((prev) => ({ ...prev, arbLadderLevels: updated }));
+                        }}
+                        disabled={disabled}
+                        className="w-full mono text-[11px] py-1 px-2 rounded-lg bg-black/30 border border-white/[0.06] text-gray-200 focus:border-blue-500/30 focus:outline-none disabled:opacity-30"
+                      />
+                      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-gray-600">%</span>
+                    </div>
+                    <span className="text-[10px] text-gray-500 mono w-16 text-center">${dollarAtLevel.toFixed(2)}</span>
+                    {!disabled && form.arbLadderLevels.length > 1 && (
+                      <button
+                        onClick={() => {
+                          setForm((prev) => ({
+                            ...prev,
+                            arbLadderLevels: prev.arbLadderLevels.filter((_, j) => j !== i),
+                          }));
+                        }}
+                        className="text-[10px] text-red-400/60 hover:text-red-400 transition-colors w-6 text-center"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Allocation sum warning */}
+              {(() => {
+                const totalAlloc = (form.arbLadderLevels || []).reduce((s, l) => s + l.allocation, 0);
+                const pct = Math.round(totalAlloc * 100);
+                return pct !== 100 ? (
+                  <p className={`text-[9px] mt-2 ${
+                    pct > 100 ? "text-red-400" : "text-amber-400"
+                  }`}>
+                    Allocation total: {pct}% {pct > 100 ? "(exceeds 100%)" : "(does not sum to 100%)"}
+                  </p>
+                ) : (
+                  <p className="text-[9px] mt-2 text-emerald-400/60">Allocation total: 100% ✓</p>
+                );
+              })()}
+            </div>
           </div>
         )}
       </Section>
@@ -355,7 +545,7 @@ function Section({ title, open, onToggle, children, badge, subtitle }: {
         </div>
         {subtitle && !open && <span className="text-[10px] text-gray-600 mono">{subtitle}</span>}
       </button>
-      <div className={`overflow-hidden transition-all duration-300 ${open ? "max-h-[600px] opacity-100" : "max-h-0 opacity-0"}`}>
+      <div className={`overflow-hidden transition-all duration-300 ${open ? "max-h-[800px] opacity-100" : "max-h-0 opacity-0"}`}>
         <div className="px-4 pb-4 pt-1">{children}</div>
       </div>
     </div>

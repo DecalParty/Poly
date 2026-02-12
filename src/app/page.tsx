@@ -12,6 +12,7 @@ import TradeHistory from "@/components/TradeHistory";
 import AlertsFeed from "@/components/AlertsFeed";
 import SettingsPanel from "@/components/SettingsPanel";
 import SetupPanel from "@/components/SetupPanel";
+import ArbitragePanel from "@/components/ArbitragePanel";
 
 export default function DashboardPage() {
   const {
@@ -75,7 +76,15 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Row 2: Markets */}
+        {/* Row 2: Arbitrage */}
+        <div className="fade-in" style={{ animationDelay: "25ms" }}>
+          <ArbitragePanel
+            arbState={state.arbState}
+            arbStats={state.arbStats}
+          />
+        </div>
+
+        {/* Row 3: Markets */}
         <div className="fade-in" style={{ animationDelay: "50ms" }}>
           <MarketGrid
             activeMarkets={state.activeMarkets}
@@ -85,7 +94,7 @@ export default function DashboardPage() {
           />
         </div>
 
-        {/* Row 3: P&L + Strategy */}
+        {/* Row 4: P&L + Strategy */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 fade-in" style={{ animationDelay: "100ms" }}>
           <div className="lg:col-span-2">
             <PnlChart data={pnlHistory} dailyData={dailyPnl} />
@@ -93,7 +102,7 @@ export default function DashboardPage() {
           <StrategyBreakdown strategies={strategyPerf} />
         </div>
 
-        {/* Row 4: Trades + Alerts */}
+        {/* Row 5: Trades + Alerts */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 fade-in" style={{ animationDelay: "150ms" }}>
           <div className="lg:col-span-2">
             <TradeHistory trades={trades} />

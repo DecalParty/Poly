@@ -13,7 +13,12 @@ export const ASSET_COLORS: Record<MarketAsset, string> = {
 
 // ─── Bot Settings ────────────────────────────────────────────────────────────
 
-export type SubStrategy = "highConfidence";
+export type SubStrategy = "highConfidence" | "arbitrage";
+
+export interface LadderLevel {
+  price: number;
+  allocation: number;
+}
 
 export interface BotSettings {
   paperTrading: boolean;
@@ -37,6 +42,16 @@ export interface BotSettings {
   highConfEnabled: boolean;
   highConfBuyAmount: number;
   highConfBuyInterval: number;
+
+  // Arbitrage strategy
+  arbEnabled: boolean;
+  arbMaxPerWindow: number;
+  arbBudgetUp: number | null;
+  arbBudgetDown: number | null;
+  arbLadderLevels: LadderLevel[];
+  arbMaxCombinedCost: number;
+  arbCancelBeforeEnd: number;
+  arbMarket: MarketAsset;
 }
 
 export const DEFAULT_SETTINGS: BotSettings = {
@@ -58,6 +73,19 @@ export const DEFAULT_SETTINGS: BotSettings = {
   highConfEnabled: true,
   highConfBuyAmount: 0.10,
   highConfBuyInterval: 5,
+
+  arbEnabled: true,
+  arbMaxPerWindow: 10,
+  arbBudgetUp: null,
+  arbBudgetDown: null,
+  arbLadderLevels: [
+    { price: 0.48, allocation: 0.40 },
+    { price: 0.46, allocation: 0.35 },
+    { price: 0.44, allocation: 0.25 },
+  ],
+  arbMaxCombinedCost: 0.97,
+  arbCancelBeforeEnd: 120,
+  arbMarket: "BTC",
 };
 
 // ─── Market Data ─────────────────────────────────────────────────────────────
@@ -114,6 +142,50 @@ export interface ActiveMarketState {
   market: MarketInfo;
   tickSize: string;
   negRisk: boolean;
+}
+
+// ─── Arbitrage State ─────────────────────────────────────────────────────────
+
+export interface ArbLadderOrder {
+  side: "yes" | "no";
+  price: number;
+  targetSize: number;
+  filledSize: number;
+  orderId: string | null;
+  status: "pending" | "placed" | "partial" | "filled" | "cancelled";
+}
+
+export interface ArbSideFills {
+  totalShares: number;
+  totalCost: number;
+  avgPrice: number;
+  orders: ArbLadderOrder[];
+}
+
+export interface ArbWindowState {
+  windowId: string;
+  conditionId: string;
+  slug: string;
+  asset: MarketAsset;
+  startTime: number;
+  endTime: number;
+  secondsRemaining: number;
+  upSide: ArbSideFills;
+  downSide: ArbSideFills;
+  combinedCost: number;
+  guaranteedPnl: number;
+  status: "placing" | "active" | "cancelling" | "resolved";
+  resolution: "pending" | "up" | "down" | null;
+  pnl: number | null;
+}
+
+export interface ArbStats {
+  windowsPlayed: number;
+  bothSidesFilled: number;
+  oneSideFilled: number;
+  neitherFilled: number;
+  totalPnl: number;
+  avgProfitPerWindow: number;
 }
 
 // ─── Positions ───────────────────────────────────────────────────────────────
@@ -211,6 +283,8 @@ export interface BotState {
   circuitBreaker: CircuitBreakerState;
   clobReady: boolean;
   alerts: AlertItem[];
+  arbState: ArbWindowState | null;
+  arbStats: ArbStats;
 }
 
 // ─── SSE Events ──────────────────────────────────────────────────────────────

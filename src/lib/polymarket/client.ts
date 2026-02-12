@@ -144,5 +144,105 @@ export async function placeSellOrder(
   }
 }
 
+/**
+ * Place a limit buy order with GTC + postOnly (maker only, zero fees).
+ * Used by the arbitrage strategy — order sits on the book waiting for takers.
+ * If the order would immediately fill (cross the spread), it is REJECTED.
+ */
+export async function placeLimitBuyOrder(
+  tokenId: string,
+  price: number,
+  size: number,
+  tickSize: string,
+  negRisk: boolean
+): Promise<{ success: boolean; orderId?: string; error?: string }> {
+  const client = await getClobClient();
+  if (!client) {
+    return { success: false, error: "CLOB client not initialized" };
+  }
+
+  try {
+    const result = await client.createAndPostOrder({
+      tokenID: tokenId,
+      price,
+      side: Side.BUY,
+      size,
+      feeRateBps: undefined,
+      nonce: undefined,
+      expiration: undefined,
+    }, { tickSize: tickSize as TickSize, negRisk }, OrderType.GTC, false, true);
+
+    logger.info(`[ARB] Limit buy placed: ${size.toFixed(2)} shares @ $${price} | token=${tokenId}`);
+    return {
+      success: true,
+      orderId: result?.orderID || result?.orderIds?.[0] || "unknown",
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`[ARB] Limit buy failed: ${msg}`);
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Cancel an open order by ID.
+ */
+export async function cancelOrder(
+  orderId: string
+): Promise<{ success: boolean; error?: string }> {
+  const client = await getClobClient();
+  if (!client) {
+    return { success: false, error: "CLOB client not initialized" };
+  }
+
+  try {
+    await client.cancelOrder({ orderID: orderId });
+    logger.info(`[ARB] Order cancelled: ${orderId}`);
+    return { success: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`[ARB] Cancel failed for ${orderId}: ${msg}`);
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Cancel multiple orders at once.
+ */
+export async function cancelOrders(
+  orderIds: string[]
+): Promise<{ success: boolean; error?: string }> {
+  const client = await getClobClient();
+  if (!client) {
+    return { success: false, error: "CLOB client not initialized" };
+  }
+
+  try {
+    await client.cancelOrders(orderIds);
+    logger.info(`[ARB] Cancelled ${orderIds.length} orders`);
+    return { success: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`[ARB] Batch cancel failed: ${msg}`);
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Get the order book for a token. Used by arb strategy to verify limit price placement.
+ */
+export async function getOrderBook(
+  tokenId: string
+): Promise<{ bids: { price: string; size: string }[]; asks: { price: string; size: string }[] } | null> {
+  try {
+    const client = getReadOnlyClient();
+    const book = await client.getOrderBook(tokenId);
+    return book as any;
+  } catch (err) {
+    logger.error(`[ARB] Failed to fetch order book: ${err}`);
+    return null;
+  }
+}
+
 // Re-export useful types
 export { Side, OrderType };

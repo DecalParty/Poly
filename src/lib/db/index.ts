@@ -185,6 +185,12 @@ export function ensureDb(): Promise<void> {
         high_conf_stop_loss REAL NOT NULL DEFAULT 0.79,
         max_combined_cost REAL NOT NULL DEFAULT 0.97,
         arbitrage_enabled INTEGER NOT NULL DEFAULT 1,
+        arb_max_per_window REAL NOT NULL DEFAULT 10,
+        arb_budget_up REAL,
+        arb_budget_down REAL,
+        arb_ladder_levels TEXT NOT NULL DEFAULT '[{"price":0.48,"allocation":0.40},{"price":0.46,"allocation":0.35},{"price":0.44,"allocation":0.25}]',
+        arb_cancel_before_end INTEGER NOT NULL DEFAULT 120,
+        arb_market TEXT NOT NULL DEFAULT 'BTC',
         bet_amount REAL NOT NULL DEFAULT 2.00
       )
     `);
@@ -252,6 +258,12 @@ export function ensureDb(): Promise<void> {
     addColIfMissing("settings", "max_combined_cost", "REAL NOT NULL DEFAULT 0.97");
     addColIfMissing("settings", "arbitrage_enabled", "INTEGER NOT NULL DEFAULT 1");
     addColIfMissing("settings", "bet_amount", "REAL NOT NULL DEFAULT 2.00");
+    addColIfMissing("settings", "arb_max_per_window", "REAL NOT NULL DEFAULT 10");
+    addColIfMissing("settings", "arb_ladder_levels", "TEXT NOT NULL DEFAULT '[{\"price\":0.48,\"allocation\":0.40},{\"price\":0.46,\"allocation\":0.35},{\"price\":0.44,\"allocation\":0.25}]'");
+    addColIfMissing("settings", "arb_budget_up", "REAL");
+    addColIfMissing("settings", "arb_budget_down", "REAL");
+    addColIfMissing("settings", "arb_cancel_before_end", "INTEGER NOT NULL DEFAULT 120");
+    addColIfMissing("settings", "arb_market", "TEXT NOT NULL DEFAULT 'BTC'");
 
     sqlJsDb.run("INSERT OR IGNORE INTO settings (id) VALUES (1)");
     persist();
