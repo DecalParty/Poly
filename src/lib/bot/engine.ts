@@ -115,15 +115,27 @@ function ensureScannerRunning() {
 let lastOutcomesJson = "";
 
 function ensurePriceBroadcast() {
-  if (priceBroadcastInterval) return;
-  // Broadcast active-market prices from scanner every 2s (reduced for VPS performance)
-  priceBroadcastInterval = setInterval(() => {
-    if (sseListeners.size === 0) return;
-    const settings = getCachedSettings();
-    const activeMarketsRecord: Record<string, ActiveMarketState> = {};
-    for (const am of getActiveMarkets()) {
-      activeMarketsRecord[am.asset] = am;
+if (priceBroadcastInterval) return;
+let emptyCount = 0;
+// Broadcast active-market prices from scanner every 2s (reduced for VPS performance)
+priceBroadcastInterval = setInterval(() => {
+  if (sseListeners.size === 0) return;
+  const settings = getCachedSettings();
+  const activeMarketsRecord: Record<string, ActiveMarketState> = {};
+  for (const am of getActiveMarkets()) {
+    activeMarketsRecord[am.asset] = am;
+  }
+
+  // Log periodic warnings when no markets are found (helps debug VPS issues)
+  if (Object.keys(activeMarketsRecord).length === 0) {
+    emptyCount++;
+    if (emptyCount === 5 || emptyCount % 30 === 0) {
+      logger.warn(`[Engine] No active markets found after ${emptyCount} broadcast cycles — Polymarket API may be unreachable from this server`);
+      broadcastLog(`? No market data — Polymarket API may be unreachable from this server. Check logs for details.`);
     }
+  } else {
+    emptyCount = 0;
+  }
 
     // Only include recentOutcomes when the data actually changed
     const outcomes = getRecentOutcomes(settings.enabledAssets);

@@ -1,10 +1,35 @@
-import axios from "axios";
+import axios, { type AxiosRequestConfig } from "axios";
 import { Side } from "@polymarket/clob-client";
 import { getReadOnlyClient } from "./client";
 import type { MarketInfo, MarketPrices } from "@/types";
 import { logger } from "../logger";
 
 const GAMMA_API = process.env.GAMMA_API_URL || "https://gamma-api.polymarket.com";
+
+const BROWSER_HEADERS: Record<string, string> = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+  "Accept": "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate, br",
+};
+
+async function axiosWithRetry<T>(config: AxiosRequestConfig, retries = 3): Promise<T> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const resp = await axios({ ...config, headers: { ...BROWSER_HEADERS, ...config.headers } });
+      return resp.data as T;
+    } catch (err) {
+      const isLast = attempt === retries - 1;
+      if (isLast) throw err;
+      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+      if (status && status >= 400 && status < 500 && status !== 429) throw err;
+      const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
+      logger.warn(`[Markets] Request to ${config.url} failed (attempt ${attempt + 1}/${retries}), retrying in ${delay}ms...`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw new Error("Unreachable");
+}
 
 /**
  * Generate the slug for the current BTC 15-minute market.
@@ -38,14 +63,15 @@ export function getSecondsRemaining(): number {
  * Fetch market data from the Gamma API by slug.
  */
 export async function fetchMarketBySlug(slug: string): Promise<MarketInfo | null> {
-  try {
-    const resp = await axios.get(`${GAMMA_API}/markets`, {
-      params: { slug },
-      timeout: 10000,
-    });
+try {
+  const markets = await axiosWithRetry<any[]>({
+    method: "get",
+    url: `${GAMMA_API}/markets`,
+    params: { slug },
+    timeout: 10000,
+  });
 
-    const markets = resp.data;
-    if (!markets || !Array.isArray(markets) || markets.length === 0) {
+  if (!markets || !Array.isArray(markets) || markets.length === 0) {
       logger.debug(`No market found for slug: ${slug}`);
       return null;
     }
@@ -77,7 +103,10 @@ export async function fetchMarketBySlug(slug: string): Promise<MarketInfo | null
     if (axios.isAxiosError(err) && err.response?.status === 404) {
       return null;
     }
-    logger.error(`Error fetching market ${slug}: ${err}`);
+    const msg = axios.isAxiosError(err)
+      ? `${err.response?.status || "network"} - ${err.response?.statusText || err.message}`
+      : String(err);
+    logger.error(`Error fetching market ${slug}: ${msg}`);
     return null;
   }
 }
@@ -169,14 +198,15 @@ export async function fetchMarketPrices(market: MarketInfo): Promise<MarketPrice
  * Returns "yes" if UP/Yes won, "no" if DOWN/No won, or null if not yet resolved.
  */
 export async function fetchMarketResolution(slug: string): Promise<"yes" | "no" | null> {
-  try {
-    const resp = await axios.get(`${GAMMA_API}/markets`, {
-      params: { slug },
-      timeout: 10000,
-    });
+try {
+  const markets = await axiosWithRetry<any[]>({
+    method: "get",
+    url: `${GAMMA_API}/markets`,
+    params: { slug },
+    timeout: 10000,
+  });
 
-    const markets = resp.data;
-    if (!markets || !Array.isArray(markets) || markets.length === 0) {
+  if (!markets || !Array.isArray(markets) || markets.length === 0) {
       logger.debug(`[Resolution] No market found for slug: ${slug}`);
       return null;
     }

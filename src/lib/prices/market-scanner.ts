@@ -1,10 +1,36 @@
-import axios from "axios";
+import axios, { type AxiosRequestConfig } from "axios";
 import { getReadOnlyClient } from "../polymarket/client";
 import { logger } from "../logger";
 import type { MarketAsset, ActiveMarketState, MarketInfo, WindowOutcome } from "@/types";
 import { Side } from "@polymarket/clob-client";
 
 const GAMMA_API = process.env.GAMMA_API_URL || "https://gamma-api.polymarket.com";
+
+const BROWSER_HEADERS: Record<string, string> = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+  "Accept": "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate, br",
+};
+
+async function axiosWithRetry<T>(config: AxiosRequestConfig, retries = 3): Promise<T> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const resp = await axios({ ...config, headers: { ...BROWSER_HEADERS, ...config.headers } });
+      return resp.data as T;
+    } catch (err) {
+      const isLast = attempt === retries - 1;
+      if (isLast) throw err;
+      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+      // Don't retry 4xx client errors (except 429 rate limit)
+      if (status && status >= 400 && status < 500 && status !== 429) throw err;
+      const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
+      logger.warn(`[Scanner] Request to ${config.url} failed (attempt ${attempt + 1}/${retries}), retrying in ${delay}ms...`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw new Error("Unreachable");
+}
 
 const ASSET_SLUGS: Record<MarketAsset, string> = {
   BTC: "btc",
@@ -37,14 +63,14 @@ function getSecondsRemainingForWindow(windowStart: number): number {
 }
 
 async function fetchMarketForAsset(asset: MarketAsset, ts: number): Promise<MarketInfo | null> {
-  const slug = `${ASSET_SLUGS[asset]}-updown-15m-${ts}`;
-  try {
-    const resp = await axios.get(`${GAMMA_API}/markets`, {
-      params: { slug },
-      timeout: 5000,
-    });
-
-    const markets = resp.data;
+const slug = `${ASSET_SLUGS[asset]}-updown-15m-${ts}`;
+try {
+  const markets = await axiosWithRetry<any[]>({
+    method: "get",
+    url: `${GAMMA_API}/markets`,
+    params: { slug },
+    timeout: 10000,
+  });
     if (!markets || !Array.isArray(markets) || markets.length === 0) return null;
 
     const m = markets[0];
@@ -67,26 +93,38 @@ async function fetchMarketForAsset(asset: MarketAsset, ts: number): Promise<Mark
       asset,
     };
   } catch (err) {
-    logger.error(`[Scanner] fetchMarket(${asset}) failed: ${err}`);
+    const msg = axios.isAxiosError(err)
+      ? `${err.response?.status || "network"} - ${err.response?.statusText || err.message}`
+      : String(err);
+    logger.error(`[Scanner] fetchMarket(${asset}, ${ts}) failed: ${msg}`);
     return null;
   }
 }
 
-async function fetchPricesForMarket(market: MarketInfo): Promise<{ yesPrice: number; noPrice: number } | null> {
-  try {
-    const client = getReadOnlyClient();
-    const midpoints = await client.getMidpoints([
-      { token_id: market.yesTokenId, side: Side.BUY },
-      { token_id: market.noTokenId, side: Side.BUY },
-    ]);
+async function fetchPricesForMarket(market: MarketInfo, retries = 2): Promise<{ yesPrice: number; noPrice: number } | null> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const client = getReadOnlyClient();
+      const midpoints = await client.getMidpoints([
+        { token_id: market.yesTokenId, side: Side.BUY },
+        { token_id: market.noTokenId, side: Side.BUY },
+      ]);
 
-    const yesPrice = parseFloat(midpoints?.[market.yesTokenId] || "0.5");
-    const noPrice = parseFloat(midpoints?.[market.noTokenId] || "0.5");
-    return { yesPrice, noPrice };
-  } catch (err) {
-    logger.error(`[Scanner] fetchPrices(${market.slug}) failed: ${err}`);
-    return null;
+      const yesPrice = parseFloat(midpoints?.[market.yesTokenId] || "0.5");
+      const noPrice = parseFloat(midpoints?.[market.noTokenId] || "0.5");
+      return { yesPrice, noPrice };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (attempt < retries) {
+        const delay = 1000 * Math.pow(2, attempt);
+        logger.warn(`[Scanner] fetchPrices(${market.slug}) attempt ${attempt + 1} failed: ${msg}, retrying in ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
+      } else {
+        logger.error(`[Scanner] fetchPrices(${market.slug}) failed after ${retries + 1} attempts: ${msg}`);
+      }
+    }
   }
+  return null;
 }
 
 async function scanMarkets(enabledAssets: MarketAsset[]) {
@@ -176,13 +214,13 @@ async function fetchRecentOutcomes(assets: MarketAsset[]) {
  * 2. CLOB midpoint prices (winning token trades at ~$1)
  */
 async function resolveWindowOutcome(slug: string): Promise<"up" | "down" | "pending"> {
-  try {
-    const resp = await axios.get(`${GAMMA_API}/markets`, {
-      params: { slug },
-      timeout: 5000,
-    });
-
-    const markets = resp.data;
+try {
+  const markets = await axiosWithRetry<any[]>({
+    method: "get",
+    url: `${GAMMA_API}/markets`,
+    params: { slug },
+    timeout: 10000,
+  }, 2);
     if (!markets?.[0]) return "pending";
 
     const m = markets[0];

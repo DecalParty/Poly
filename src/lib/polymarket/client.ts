@@ -1,7 +1,15 @@
 import { ClobClient, ApiKeyCreds, Side, OrderType, type TickSize } from "@polymarket/clob-client";
 import { Wallet } from "@ethersproject/wallet";
 import { StaticJsonRpcProvider } from "@ethersproject/providers";
+import axios from "axios";
 import { logger } from "../logger";
+
+// Set browser-like default headers for all axios requests (used by CLOB client internally).
+// This prevents VPS/datacenter IP blocking by Polymarket's API.
+axios.defaults.headers.common["User-Agent"] =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+axios.defaults.headers.common["Accept"] = "application/json, text/plain, */*";
+axios.defaults.headers.common["Accept-Language"] = "en-US,en;q=0.9";
 
 // Singleton CLOB client instance
 let clobClient: ClobClient | null = null;
