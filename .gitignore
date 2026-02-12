@@ -1,7 +1,5 @@
 node_modules/
-# Ignore .next except the standalone build output
-.next/*
-!.next/standalone/
+.next/
 .env.local
 .env
 data/
