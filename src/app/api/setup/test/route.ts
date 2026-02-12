@@ -104,12 +104,13 @@ export async function GET() {
       if (exchangeBalance > 0) parts.push(`$${exchangeBalance.toFixed(2)} exchange`);
       if (onChainBalance > 0) parts.push(`$${onChainBalance.toFixed(2)} wallet`);
 
+      // Wallet is connected if we can read the address - balance is informational
       results.wallet = {
-        ok: totalBalance > 0,
+        ok: true,
         label: "Wallet",
         detail: totalBalance > 0
           ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)} | ${parts.join(" + ")}`
-          : `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)} | $0.00 USDC (deposit on Polymarket to trade)`,
+          : `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)} | $0.00 available (funds may be in active positions)`,
       };
     } catch (err) {
       results.wallet = {
