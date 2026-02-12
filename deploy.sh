@@ -5,7 +5,7 @@ echo "=== Polymarket Bot Deploy ==="
 
 # 1. Setup swap if not already active
 if ! swapon --show | grep -q '/swapfile'; then
-  echo "[1/4] Setting up 2GB swap..."
+  echo "[1/5] Setting up 2GB swap..."
   if [ ! -f /swapfile ]; then
     fallocate -l 2G /swapfile
     chmod 600 /swapfile
@@ -15,31 +15,47 @@ if ! swapon --show | grep -q '/swapfile'; then
   grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
   echo "  Swap enabled."
 else
-  echo "[1/4] Swap already active, skipping."
+  echo "[1/5] Swap already active, skipping."
 fi
 
 # 2. Get the directory this script lives in (= the repo root)
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-echo "[2/4] Repo at: $REPO_DIR"
+STANDALONE="$REPO_DIR/.next/standalone"
+echo "[2/5] Repo at: $REPO_DIR"
 cd "$REPO_DIR"
 
-# 3. Copy .env.local into standalone if it exists
+# 3. Ensure .env.local exists
 if [ -f "$REPO_DIR/.env.local" ]; then
-  cp "$REPO_DIR/.env.local" "$REPO_DIR/.next/standalone/.env.local"
-  echo "[3/4] Copied .env.local into standalone."
+  echo "[3/5] Found .env.local"
 elif [ -f "$REPO_DIR/.env" ]; then
-  cp "$REPO_DIR/.env" "$REPO_DIR/.next/standalone/.env.local"
-  echo "[3/4] Copied .env into standalone as .env.local."
+  cp "$REPO_DIR/.env" "$REPO_DIR/.env.local"
+  echo "[3/5] Copied .env to .env.local"
 else
-  echo "[3/4] WARNING: No .env.local found. Bot may not work without API keys."
+  echo "[3/5] WARNING: No .env.local found at $REPO_DIR/.env.local"
+  echo "       Bot may not work without API keys."
+  echo "       Create one based on .env.example"
 fi
 
-# 4. Kill old process and start
-echo "[4/4] Starting bot..."
+# 4. Link .env.local and data/ into standalone dir
+#    (standalone server.js does process.chdir(__dirname) so process.cwd() = standalone dir)
+echo "[4/5] Linking config and data into standalone..."
+mkdir -p "$REPO_DIR/data"
+
+# Symlink .env.local so the standalone server can read it
+ln -sf "$REPO_DIR/.env.local" "$STANDALONE/.env.local" 2>/dev/null || cp -f "$REPO_DIR/.env.local" "$STANDALONE/.env.local"
+
+# Symlink data/ so the database persists at repo root
+ln -sfn "$REPO_DIR/data" "$STANDALONE/data" 2>/dev/null || true
+
+echo "  .env.local -> linked"
+echo "  data/      -> linked"
+
+# 5. Kill old process and start
+echo "[5/5] Starting bot..."
 pkill -f "node.*server.js" 2>/dev/null || true
 sleep 1
 
-cd "$REPO_DIR/.next/standalone"
+cd "$STANDALONE"
 PORT=${PORT:-3000} nohup node server.js > "$REPO_DIR/bot.log" 2>&1 &
 
 sleep 2
