@@ -9,6 +9,6 @@
   "/api/settings/route": "app/api/settings/route.js",
   "/api/stats/route": "app/api/stats/route.js",
   "/api/stream/route": "app/api/stream/route.js",
-  "/api/setup/test/route": "app/api/setup/test/route.js",
-  "/api/trades/route": "app/api/trades/route.js"
+  "/api/trades/route": "app/api/trades/route.js",
+  "/api/setup/test/route": "app/api/setup/test/route.js"
 }

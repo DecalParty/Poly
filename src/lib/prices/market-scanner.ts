@@ -66,7 +66,8 @@ async function fetchMarketForAsset(asset: MarketAsset, ts: number): Promise<Mark
       negRisk: m.negRisk === true,
       asset,
     };
-  } catch {
+  } catch (err) {
+    logger.error(`[Scanner] fetchMarket(${asset}) failed: ${err}`);
     return null;
   }
 }
@@ -82,7 +83,8 @@ async function fetchPricesForMarket(market: MarketInfo): Promise<{ yesPrice: num
     const yesPrice = parseFloat(midpoints?.[market.yesTokenId] || "0.5");
     const noPrice = parseFloat(midpoints?.[market.noTokenId] || "0.5");
     return { yesPrice, noPrice };
-  } catch {
+  } catch (err) {
+    logger.error(`[Scanner] fetchPrices(${market.slug}) failed: ${err}`);
     return null;
   }
 }
