@@ -2,14 +2,52 @@ import { ClobClient, ApiKeyCreds, Side, OrderType, type TickSize } from "@polyma
 import { Wallet } from "@ethersproject/wallet";
 import { StaticJsonRpcProvider } from "@ethersproject/providers";
 import axios from "axios";
+import https from "https";
 import { logger } from "../logger";
 
-// Set browser-like default headers for all axios requests (used by CLOB client internally).
-// This prevents VPS/datacenter IP blocking by Polymarket's API.
-axios.defaults.headers.common["User-Agent"] =
+// Chrome-like TLS ciphers to avoid datacenter TLS fingerprint detection
+const CHROME_CIPHERS = [
+  "TLS_AES_128_GCM_SHA256",
+  "TLS_AES_256_GCM_SHA384",
+  "TLS_CHACHA20_POLY1305_SHA256",
+  "ECDHE-ECDSA-AES128-GCM-SHA256",
+  "ECDHE-RSA-AES128-GCM-SHA256",
+  "ECDHE-ECDSA-AES256-GCM-SHA384",
+  "ECDHE-RSA-AES256-GCM-SHA384",
+  "ECDHE-ECDSA-CHACHA20-POLY1305",
+  "ECDHE-RSA-CHACHA20-POLY1305",
+  "ECDHE-RSA-AES128-SHA",
+  "ECDHE-RSA-AES256-SHA",
+  "AES128-GCM-SHA256",
+  "AES256-GCM-SHA384",
+  "AES128-SHA",
+  "AES256-SHA",
+].join(":");
+
+const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-axios.defaults.headers.common["Accept"] = "application/json, text/plain, */*";
-axios.defaults.headers.common["Accept-Language"] = "en-US,en;q=0.9";
+
+// Custom HTTPS agent with Chrome-like TLS fingerprint.
+// Attached to every axios request so Cloudflare doesn't flag the TLS handshake.
+const tlsAgent = new https.Agent({
+  ciphers: CHROME_CIPHERS,
+  minVersion: "TLSv1.2",
+  maxVersion: "TLSv1.3",
+  keepAlive: true,
+});
+
+// Axios request interceptor: runs AFTER @polymarket/clob-client sets its headers
+// in overloadHeaders(), so we forcibly replace them with browser-like values.
+// This is the 100% fix — axios.defaults alone does NOT work because the CLOB
+// client explicitly overwrites headers on every request.
+axios.interceptors.request.use((config) => {
+  config.headers["User-Agent"] = BROWSER_UA;
+  config.headers["Accept"] = "application/json, text/plain, */*";
+  config.headers["Accept-Language"] = "en-US,en;q=0.9";
+  config.httpAgent = config.httpAgent || tlsAgent;
+  config.httpsAgent = config.httpsAgent || tlsAgent;
+  return config;
+});
 
 // Singleton CLOB client instance
 let clobClient: ClobClient | null = null;

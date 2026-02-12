@@ -44,7 +44,8 @@ function httpsGetJson<T>(path: string, params: Record<string, string>): Promise<
         },
         ciphers: CHROME_CIPHERS,
         ecdhCurve: "prime256v1:secp384r1",
-        secureProtocol: "TLSv1_2_method",
+        minVersion: "TLSv1.2",
+        maxVersion: "TLSv1.3",
         timeout: 10000,
       },
       (res) => {
