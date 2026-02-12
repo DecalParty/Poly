@@ -32,9 +32,20 @@ export async function getClobClient(): Promise<ClobClient | null> {
     const provider = new JsonRpcProvider(POLYGON_RPC);
     const signer = new Wallet(privateKey, provider);
 
-    // Create a temporary client to derive API keys
-    const tempClient = new ClobClient(host, chainId, signer, undefined, sigType, funderAddress);
-    apiCreds = await tempClient.createOrDeriveApiKey();
+    // Use pre-configured API keys if available (needed for VPS deployments)
+    const preKey = process.env.CLOB_API_KEY;
+    const preSecret = process.env.CLOB_SECRET;
+    const prePassphrase = process.env.CLOB_PASSPHRASE;
+
+    if (preKey && preSecret && prePassphrase) {
+      apiCreds = { key: preKey, secret: preSecret, passphrase: prePassphrase };
+      logger.info("Using pre-configured CLOB API keys from .env");
+    } else {
+      // Create a temporary client to derive API keys
+      const tempClient = new ClobClient(host, chainId, signer, undefined, sigType, funderAddress);
+      apiCreds = await tempClient.createOrDeriveApiKey();
+      logger.info("API keys derived from Polymarket");
+    }
 
     // Create the fully authenticated client
     clobClient = new ClobClient(host, chainId, signer, apiCreds, sigType, funderAddress);
