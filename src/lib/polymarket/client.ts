@@ -1,6 +1,6 @@
 import { ClobClient, ApiKeyCreds, Side, OrderType, type TickSize } from "@polymarket/clob-client";
 import { Wallet } from "@ethersproject/wallet";
-import { JsonRpcProvider } from "@ethersproject/providers";
+import { StaticJsonRpcProvider } from "@ethersproject/providers";
 import { logger } from "../logger";
 
 // Singleton CLOB client instance
@@ -29,7 +29,7 @@ export async function getClobClient(): Promise<ClobClient | null> {
   }
 
   try {
-    const provider = new JsonRpcProvider(POLYGON_RPC);
+    const provider = new StaticJsonRpcProvider(POLYGON_RPC, 137);
     const signer = new Wallet(privateKey, provider);
 
     // Use pre-configured API keys if available (needed for VPS deployments)

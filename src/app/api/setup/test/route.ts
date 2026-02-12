@@ -1,6 +1,6 @@
 ﻿import { NextResponse } from "next/server";
 import { getClobClient, getReadOnlyClient } from "@/lib/polymarket/client";
-import { JsonRpcProvider } from "@ethersproject/providers";
+import { StaticJsonRpcProvider } from "@ethersproject/providers";
 import { Wallet } from "@ethersproject/wallet";
 
 export const dynamic = "force-dynamic";
@@ -38,7 +38,7 @@ export async function GET() {
   // 2. Test RPC connection
   let walletAddress = "";
   try {
-    const provider = new JsonRpcProvider(rpcUrl);
+    const provider = new StaticJsonRpcProvider(rpcUrl, 137);
     const blockNumber = await Promise.race([
       provider.getBlockNumber(),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
@@ -65,7 +65,7 @@ export async function GET() {
   // 3. Test wallet balance (USDC on Polygon)
   if (hasKey && results.rpc.ok) {
     try {
-      const provider = new JsonRpcProvider(rpcUrl);
+      const provider = new StaticJsonRpcProvider(rpcUrl, 137);
       const wallet = new Wallet(privateKey!, provider);
       // USDC on Polygon: 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
       const usdcAddress = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
