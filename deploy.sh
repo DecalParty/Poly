@@ -48,10 +48,20 @@ ln -sf "$REPO_DIR/.env.local" "$STANDALONE/.env.local" 2>/dev/null || cp -f "$RE
 ln -sfn "$REPO_DIR/data" "$STANDALONE/data" 2>/dev/null || true
 
 # Ensure sql.js WASM binary exists (not included by Next.js standalone tracing)
-if [ ! -f "$STANDALONE/node_modules/sql.js/dist/sql-wasm.wasm" ] && [ -f "$REPO_DIR/node_modules/sql.js/dist/sql-wasm.wasm" ]; then
+WASM_DEST="$STANDALONE/node_modules/sql.js/dist/sql-wasm.wasm"
+if [ ! -f "$WASM_DEST" ]; then
   mkdir -p "$STANDALONE/node_modules/sql.js/dist"
-  cp "$REPO_DIR/node_modules/sql.js/dist/sql-wasm.wasm" "$STANDALONE/node_modules/sql.js/dist/sql-wasm.wasm"
-  echo "  sql-wasm.wasm -> copied"
+  # Try copying from local node_modules first
+  if [ -f "$REPO_DIR/node_modules/sql.js/dist/sql-wasm.wasm" ]; then
+    cp "$REPO_DIR/node_modules/sql.js/dist/sql-wasm.wasm" "$WASM_DEST"
+    echo "  sql-wasm.wasm -> copied from node_modules"
+  else
+    # Download directly from npm as fallback
+    curl -sL "https://cdn.jsdelivr.net/npm/sql.js@1.13.0/dist/sql-wasm.wasm" -o "$WASM_DEST"
+    echo "  sql-wasm.wasm -> downloaded"
+  fi
+else
+  echo "  sql-wasm.wasm -> exists"
 fi
 
 echo "  .env.local -> linked"
@@ -60,7 +70,8 @@ echo "  data/      -> linked"
 # 5. Kill old process and start
 echo "[5/5] Starting bot..."
 pkill -f "node.*server.js" 2>/dev/null || true
-sleep 1
+fuser -k 3000/tcp 2>/dev/null || true
+sleep 2
 
 cd "$STANDALONE"
 PORT=${PORT:-3000} nohup node server.js > "$REPO_DIR/bot.log" 2>&1 &
