@@ -298,23 +298,34 @@ function refreshWalletBalance() {
   walletBalanceFetchTime = now;
 
   const privateKey = process.env.PRIVATE_KEY;
-  const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
   if (!privateKey) return;
 
   try {
+    const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
     const provider = new StaticJsonRpcProvider(rpcUrl, 137);
     const wallet = new Wallet(privateKey, provider);
     cachedWalletAddress = wallet.address;
 
-    const usdcAddress = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
-    const erc20Abi = ["function balanceOf(address) view returns (uint256)"];
-    const usdc = new Contract(usdcAddress, erc20Abi, provider);
-
-    usdc.balanceOf(wallet.address).then((raw: any) => {
-      cachedWalletBalance = Number(raw) / 1e6;
-    }).catch(() => {
-      // Silently fail - balance just stays stale
-    });
+    // Check Polymarket exchange balance (deposited USDC available to trade)
+    getClobClient().then(async (client) => {
+      if (!client) return;
+      try {
+        const resp = await client.getBalanceAllowance({ asset_type: "COLLATERAL" as any });
+        const exchangeBalance = parseFloat(resp?.balance || "0") / 1e6;
+        cachedWalletBalance = exchangeBalance;
+      } catch {
+        // Fallback to on-chain USDC.e
+        try {
+          const usdcAddress = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+          const erc20Abi = ["function balanceOf(address) view returns (uint256)"];
+          const usdc = new Contract(usdcAddress, erc20Abi, provider);
+          const raw = await usdc.balanceOf(wallet.address);
+          cachedWalletBalance = Number(raw) / 1e6;
+        } catch {
+          // Silently fail - balance just stays stale
+        }
+      }
+    }).catch(() => {});
   } catch {
     // Ignore - will retry on next cycle
   }

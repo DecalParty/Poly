@@ -62,12 +62,13 @@ export async function GET() {
     };
   }
 
-  // 3. Test wallet balance (USDC on Polygon)
-  if (hasKey && results.rpc.ok) {
+  // 3. Test wallet balance (Polymarket exchange + on-chain USDC)
+  if (hasKey && hasFunder && results.rpc.ok) {
     try {
       const provider = new StaticJsonRpcProvider(rpcUrl, 137);
       const wallet = new Wallet(privateKey!, provider);
-      // USDC on Polygon: 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+
+      // Check on-chain USDC.e
       const usdcAddress = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
       const erc20Abi = ["function balanceOf(address) view returns (uint256)"];
       const { Contract } = await import("@ethersproject/contracts");
@@ -76,14 +77,34 @@ export async function GET() {
         usdc.balanceOf(wallet.address),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
       ]);
-      const balance = Number(raw) / 1e6;
+      const onChainBalance = Number(raw) / 1e6;
+
+      // Check Polymarket exchange balance (deposited USDC)
+      let exchangeBalance = 0;
+      try {
+        const client = await Promise.race([
+          getClobClient(),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+        ]);
+        if (client) {
+          const resp = await client.getBalanceAllowance({ asset_type: "COLLATERAL" as any });
+          exchangeBalance = parseFloat(resp?.balance || "0") / 1e6;
+        }
+      } catch {
+        // Exchange balance unavailable
+      }
+
+      const totalBalance = onChainBalance + exchangeBalance;
+      const parts: string[] = [];
+      if (exchangeBalance > 0) parts.push(`$${exchangeBalance.toFixed(2)} exchange`);
+      if (onChainBalance > 0) parts.push(`$${onChainBalance.toFixed(2)} wallet`);
 
       results.wallet = {
-        ok: balance > 0,
+        ok: totalBalance > 0,
         label: "Wallet",
-        detail: balance > 0
-          ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)} � $${balance.toFixed(2)} USDC`
-          : `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)} � $0.00 USDC (fund wallet to trade)`,
+        detail: totalBalance > 0
+          ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)} | ${parts.join(" + ")}`
+          : `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)} | $0.00 USDC (deposit on Polymarket to trade)`,
       };
     } catch (err) {
       results.wallet = {
