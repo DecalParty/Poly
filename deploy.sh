@@ -5,7 +5,7 @@ echo "=== Polymarket Bot Deploy ==="
 
 # 1. Setup swap if not already active
 if ! swapon --show | grep -q '/swapfile'; then
-  echo "[1/5] Setting up 2GB swap..."
+  echo "[1/4] Setting up 2GB swap..."
   if [ ! -f /swapfile ]; then
     fallocate -l 2G /swapfile
     chmod 600 /swapfile
@@ -15,31 +15,29 @@ if ! swapon --show | grep -q '/swapfile'; then
   grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
   echo "  Swap enabled."
 else
-  echo "[1/5] Swap already active, skipping."
+  echo "[1/4] Swap already active, skipping."
 fi
 
 # 2. Get the directory this script lives in (= the repo root)
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-echo "[2/5] Repo at: $REPO_DIR"
+echo "[2/4] Repo at: $REPO_DIR"
 cd "$REPO_DIR"
 
-# 3. Check .env.local
+# 3. Check .env.local and install dependencies (no build needed - pre-built locally)
 if [ -f "$REPO_DIR/.env.local" ]; then
-  echo "[3/5] Found .env.local"
+  echo "[3/4] Found .env.local"
 elif [ -f "$REPO_DIR/.env" ]; then
   cp "$REPO_DIR/.env" "$REPO_DIR/.env.local"
-  echo "[3/5] Copied .env to .env.local"
+  echo "[3/4] Copied .env to .env.local"
 else
-  echo "[3/5] WARNING: No .env.local found. Create one from .env.example"
+  echo "[3/4] WARNING: No .env.local found. Create one from .env.example"
 fi
 
-# 4. Install dependencies and build
-echo "[4/5] Installing dependencies and building..."
-npm install --production=false
-NODE_OPTIONS="--max-old-space-size=512" npm run build
+echo "  Installing dependencies (no build needed - pre-built locally)..."
+npm install --omit=dev 2>&1 | tail -3
 
-# 5. Kill old process and start
-echo "[5/5] Starting bot..."
+# 4. Kill old process and start
+echo "[4/4] Starting bot..."
 pkill -f "next start" 2>/dev/null || true
 pkill -f "node.*server.js" 2>/dev/null || true
 fuser -k 3000/tcp 2>/dev/null || true

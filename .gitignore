@@ -1,5 +1,6 @@
 node_modules/
-.next/
+# Ignore .next cache but keep the build output for VPS deployment
+.next/cache/
 .env.local
 .env
 data/
