@@ -1,4 +1,3 @@
-import axios, { type AxiosRequestConfig } from "axios";
 import { getReadOnlyClient } from "../polymarket/client";
 import { logger } from "../logger";
 import type { MarketAsset, ActiveMarketState, MarketInfo, WindowOutcome } from "@/types";
@@ -6,26 +5,30 @@ import { Side } from "@polymarket/clob-client";
 
 const GAMMA_API = process.env.GAMMA_API_URL || "https://gamma-api.polymarket.com";
 
-const BROWSER_HEADERS: Record<string, string> = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-  "Accept": "application/json, text/plain, */*",
-  "Accept-Language": "en-US,en;q=0.9",
-  "Accept-Encoding": "gzip, deflate, br",
-};
-
-async function axiosWithRetry<T>(config: AxiosRequestConfig, retries = 3): Promise<T> {
+/**
+ * Fetch JSON from Gamma API using native fetch (axios gets blocked by Polymarket CDN on VPS).
+ */
+async function fetchGamma<T>(path: string, params: Record<string, string>, retries = 3): Promise<T> {
+  const url = `${GAMMA_API}${path}?${new URLSearchParams(params).toString()}`;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      const resp = await axios({ ...config, headers: { ...BROWSER_HEADERS, ...config.headers } });
-      return resp.data as T;
-    } catch (err) {
+      const resp = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) {
+        const err = new Error(`${resp.status} ${resp.statusText}`);
+        (err as any).status = resp.status;
+        throw err;
+      }
+      return (await resp.json()) as T;
+    } catch (err: any) {
       const isLast = attempt === retries - 1;
       if (isLast) throw err;
-      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
-      // Don't retry 4xx client errors (except 429 rate limit)
+      const status = err.status as number | undefined;
       if (status && status >= 400 && status < 500 && status !== 429) throw err;
       const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
-      logger.warn(`[Scanner] Request to ${config.url} failed (attempt ${attempt + 1}/${retries}), retrying in ${delay}ms...`);
+      logger.warn(`[Scanner] ${url} failed (attempt ${attempt + 1}/${retries}), retrying in ${delay}ms`);
       await new Promise((r) => setTimeout(r, delay));
     }
   }
@@ -65,13 +68,8 @@ function getSecondsRemainingForWindow(windowStart: number): number {
 async function fetchMarketForAsset(asset: MarketAsset, ts: number): Promise<MarketInfo | null> {
 const slug = `${ASSET_SLUGS[asset]}-updown-15m-${ts}`;
 try {
-  const markets = await axiosWithRetry<any[]>({
-    method: "get",
-    url: `${GAMMA_API}/markets`,
-    params: { slug },
-    timeout: 10000,
-  });
-    if (!markets || !Array.isArray(markets) || markets.length === 0) return null;
+  const markets = await fetchGamma<any[]>("/markets", { slug });
+  if (!markets || !Array.isArray(markets) || markets.length === 0) return null;
 
     const m = markets[0];
     const clobTokenIds: string[] = m.clobTokenIds
@@ -92,11 +90,8 @@ try {
       negRisk: m.negRisk === true,
       asset,
     };
-  } catch (err) {
-    const msg = axios.isAxiosError(err)
-      ? `${err.response?.status || "network"} - ${err.response?.statusText || err.message}`
-      : String(err);
-    logger.error(`[Scanner] fetchMarket(${asset}, ${ts}) failed: ${msg}`);
+  } catch (err: any) {
+    logger.error(`[Scanner] fetchMarket(${asset}, ${ts}) failed: ${err.message || err}`);
     return null;
   }
 }
@@ -215,13 +210,8 @@ async function fetchRecentOutcomes(assets: MarketAsset[]) {
  */
 async function resolveWindowOutcome(slug: string): Promise<"up" | "down" | "pending"> {
 try {
-  const markets = await axiosWithRetry<any[]>({
-    method: "get",
-    url: `${GAMMA_API}/markets`,
-    params: { slug },
-    timeout: 10000,
-  }, 2);
-    if (!markets?.[0]) return "pending";
+  const markets = await fetchGamma<any[]>("/markets", { slug }, 2);
+  if (!markets?.[0]) return "pending";
 
     const m = markets[0];
 
