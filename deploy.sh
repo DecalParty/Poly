@@ -47,6 +47,13 @@ ln -sf "$REPO_DIR/.env.local" "$STANDALONE/.env.local" 2>/dev/null || cp -f "$RE
 # Symlink data/ so the database persists at repo root
 ln -sfn "$REPO_DIR/data" "$STANDALONE/data" 2>/dev/null || true
 
+# Ensure sql.js WASM binary exists (not included by Next.js standalone tracing)
+if [ ! -f "$STANDALONE/node_modules/sql.js/dist/sql-wasm.wasm" ] && [ -f "$REPO_DIR/node_modules/sql.js/dist/sql-wasm.wasm" ]; then
+  mkdir -p "$STANDALONE/node_modules/sql.js/dist"
+  cp "$REPO_DIR/node_modules/sql.js/dist/sql-wasm.wasm" "$STANDALONE/node_modules/sql.js/dist/sql-wasm.wasm"
+  echo "  sql-wasm.wasm -> copied"
+fi
+
 echo "  .env.local -> linked"
 echo "  data/      -> linked"
 
