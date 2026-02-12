@@ -130,8 +130,8 @@ priceBroadcastInterval = setInterval(() => {
   if (Object.keys(activeMarketsRecord).length === 0) {
     emptyCount++;
     if (emptyCount === 5 || emptyCount % 30 === 0) {
-      logger.warn(`[Engine] No active markets found after ${emptyCount} broadcast cycles — Polymarket API may be unreachable from this server`);
-      broadcastLog(`? No market data — Polymarket API may be unreachable from this server. Check logs for details.`);
+      logger.warn(`[Engine] No active markets found after ${emptyCount} broadcast cycles - Polymarket API may be unreachable from this server`);
+      broadcastLog(`No market data - Polymarket API may be unreachable from this server. Check logs for details.`);
     }
   } else {
     emptyCount = 0;
