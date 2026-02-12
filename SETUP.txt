@@ -1,0 +1,6 @@
+1.	Get a VPS in Amsterdam (~$5/mo)
+2.	Clone & install on the VPS
+3.	Create .env.local with 2 lines (private key + funder address)
+4.	npm run build && npm start
+5.	Hit "Test Connections" — all green → switch to Live
+Nothing to enter in the bot UI. Everything goes in .env.local on the VPS. The bot reads it automatically.
