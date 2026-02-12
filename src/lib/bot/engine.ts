@@ -7,6 +7,7 @@ import {
 } from "../polymarket/markets";
 import { evaluateStrategy } from "./strategy";
 import { executeBuy, executeSell, recordResolution } from "./executor";
+import { arbTick, getArbState, getArbStats, setArbCallbacks, getArbCapitalDeployed } from "./arbitrage";
 import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount } from "../db/queries";
 import { startMarketScanner, stopMarketScanner, getActiveMarkets, getActiveMarketForAsset, getRecentOutcomes, markOutcomeResolved } from "../prices/market-scanner";
 import { getClobClient } from "../polymarket/client";
@@ -28,6 +29,8 @@ import type {
   AlertItem,
   MarketAsset,
   BotSettings,
+  ArbWindowState,
+  ArbStats,
 } from "@/types";
 
 // ---- Global Bot State (singleton, lives in the server process) ----
@@ -211,6 +214,10 @@ function getCapitalState(settings: BotSettings): CapitalState {
     deployed += pos.costBasis;
   }
 
+  // Include arb capital currently deployed in open positions
+  const arbDeployed = getArbCapitalDeployed();
+  deployed += arbDeployed;
+
   const todayPnl = getTodayPnl();
   const todayLosses = getTodayLossCount();
   const consecutiveWins = getConsecutiveWins();
@@ -331,6 +338,8 @@ export function getState(): BotState {
     },
     clobReady,
     alerts: alerts.slice(0, 50),
+    arbState: getArbState(),
+    arbStats: getArbStats(),
   };
 }
 
@@ -369,8 +378,19 @@ async function refreshMarket() {
     }
   } catch (err) {
     connectionStatus = "disconnected";
-    logger.error(`Market refresh failed: ${err}`);
-    broadcastLog(`Connection error: ${err}`);
+    const e = err as any;
+    const details = [
+      e?.message ? `message=${e.message}` : null,
+      e?.code ? `code=${e.code}` : null,
+      e?.name ? `name=${e.name}` : null,
+      e?.response?.status ? `status=${e.response.status}` : null,
+      e?.config?.url ? `url=${e.config.url}` : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    logger.error(`Market refresh failed${details ? ` (${details})` : ""}`);
+    broadcastLog(`Connection error${details ? `: ${details}` : ""}`);
   }
 
   broadcastState();
@@ -551,6 +571,13 @@ async function tradingLoop() {
       }
     }
 
+    // ---- Run arbitrage strategy in parallel ----
+    try {
+      await arbTick(settings, activeMarkets, settings.paperTrading);
+    } catch (arbErr) {
+      logger.error(`[ARB] Tick error: ${arbErr}`);
+    }
+
     // ---- Resolve stale positions whose markets have ended ----
     for (const [posKey, pos] of Array.from(windowPositions.entries())) {
       const activeMarket = getActiveMarketForAsset(pos.asset);
@@ -638,6 +665,13 @@ export function startBot(): { success: boolean; error?: string } {
   botStatus = "running";
   lastAction = "Bot started";
   lastActionTime = new Date().toISOString();
+
+  // Wire up arbitrage callbacks
+  setArbCallbacks(
+    (trade) => broadcastTrade(trade),
+    (msg) => broadcastLog(msg),
+    (severity, msg, asset) => addAlert(severity, msg, asset),
+  );
 
   const settings = getCachedSettings();
 
