@@ -6,10 +6,28 @@ import { logger } from "../logger";
 
 const GAMMA_API_HOST = "gamma-api.polymarket.com";
 
+const CHROME_CIPHERS = [
+  "TLS_AES_128_GCM_SHA256",
+  "TLS_AES_256_GCM_SHA384",
+  "TLS_CHACHA20_POLY1305_SHA256",
+  "ECDHE-ECDSA-AES128-GCM-SHA256",
+  "ECDHE-RSA-AES128-GCM-SHA256",
+  "ECDHE-ECDSA-AES256-GCM-SHA384",
+  "ECDHE-RSA-AES256-GCM-SHA384",
+  "ECDHE-ECDSA-CHACHA20-POLY1305",
+  "ECDHE-RSA-CHACHA20-POLY1305",
+  "ECDHE-RSA-AES128-SHA",
+  "ECDHE-RSA-AES256-SHA",
+  "AES128-GCM-SHA256",
+  "AES256-GCM-SHA384",
+  "AES128-SHA",
+  "AES256-SHA",
+].join(":");
+
 /**
  * Fetch JSON from Gamma API using Node https module.
  * Next.js patches global fetch and adds headers that Polymarket CDN blocks.
- * Node https is not patched.
+ * Node https is not patched. We also set ciphers to mimic Chrome.
  */
 function httpsGetJson<T>(path: string, params: Record<string, string>): Promise<T> {
   const qs = new URLSearchParams(params).toString();
@@ -19,7 +37,14 @@ function httpsGetJson<T>(path: string, params: Record<string, string>): Promise<
       {
         hostname: GAMMA_API_HOST,
         path: fullPath,
-        headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "Accept": "application/json, text/plain, */*",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+        ciphers: CHROME_CIPHERS,
+        ecdhCurve: "prime256v1:secp384r1",
+        secureProtocol: "TLSv1_2_method",
         timeout: 10000,
       },
       (res) => {
