@@ -126,7 +126,7 @@ let lastOutcomesJson = "";
 function ensurePriceBroadcast() {
 if (priceBroadcastInterval) return;
 let emptyCount = 0;
-// Broadcast active-market prices from scanner every 2s (reduced for VPS performance)
+// Broadcast active-market prices from scanner every 1s for smooth countdown
 priceBroadcastInterval = setInterval(() => {
   if (sseListeners.size === 0) return;
   const settings = getCachedSettings();
@@ -160,7 +160,7 @@ priceBroadcastInterval = setInterval(() => {
       },
       timestamp: new Date().toISOString(),
     });
-  }, 2000);
+  }, 1000);
 }
 
 export function subscribeSSE(listener: (event: SSEEvent) => void): () => void {

@@ -95,6 +95,10 @@ const ASSET_SLUGS: Record<MarketAsset, string> = {
 
 const activeMarkets: Map<string, ActiveMarketState> = new Map();
 let scanInterval: ReturnType<typeof setInterval> | null = null;
+let priceInterval: ReturnType<typeof setInterval> | null = null;
+
+// Cached MarketInfo per asset (only re-fetched at window boundaries)
+const marketInfoCache: Map<string, { market: MarketInfo; windowTs: number }> = new Map();
 
 // Window outcome history cache
 const outcomeCache: Map<string, WindowOutcome> = new Map();
@@ -176,35 +180,22 @@ async function fetchPricesForMarket(market: MarketInfo, retries = 2): Promise<{ 
 async function scanMarkets(enabledAssets: MarketAsset[]) {
   const { current, prev } = getWindowTimestamps();
 
-  // Fetch all assets in parallel for speed
+  // Discover markets: only re-fetch from Gamma if the window changed or cache is empty
   await Promise.all(enabledAssets.map(async (asset) => {
+    const cached = marketInfoCache.get(asset);
+    if (cached && cached.windowTs === current) return; // still same window, skip Gamma
+
     for (const ts of [current, prev]) {
       const market = await fetchMarketForAsset(asset, ts);
-      if (!market || !market.active) continue;
-
-      const prices = await fetchPricesForMarket(market);
-      const secsRemaining = getSecondsRemainingForWindow(ts);
-
-      if (prices && secsRemaining > 0) {
-        const state: ActiveMarketState = {
-          asset,
-          conditionId: market.conditionId,
-          slug: market.slug,
-          yesTokenId: market.yesTokenId,
-          noTokenId: market.noTokenId,
-          yesPrice: prices.yesPrice,
-          noPrice: prices.noPrice,
-          combinedCost: prices.yesPrice + prices.noPrice,
-          secondsRemaining: secsRemaining,
-          market,
-          tickSize: market.tickSize,
-          negRisk: market.negRisk,
-        };
-        activeMarkets.set(asset, state);
+      if (market && market.active) {
+        marketInfoCache.set(asset, { market, windowTs: current });
         break;
       }
     }
   }));
+
+  // Fetch prices for all discovered markets
+  await pollPricesOnly(enabledAssets);
 
   // Periodically fetch recent window outcomes
   const now = Date.now();
@@ -213,6 +204,70 @@ async function scanMarkets(enabledAssets: MarketAsset[]) {
     lastOutcomeFetch = now;
     lastOutcomeAssets = [...enabledAssets];
     fetchRecentOutcomes(enabledAssets).catch(() => {});
+  }
+}
+
+/**
+ * Fast price-only poll: uses cached MarketInfo, batches all tokens into a single
+ * getMidpoints call. Runs on a tight interval (2s) without hitting Gamma API.
+ */
+async function pollPricesOnly(enabledAssets: MarketAsset[]) {
+  // Collect all token pairs from cached market info
+  const assetMarkets: { asset: MarketAsset; market: MarketInfo }[] = [];
+  const tokenRequests: { token_id: string; side: typeof Side.BUY }[] = [];
+
+  for (const asset of enabledAssets) {
+    const cached = marketInfoCache.get(asset);
+    if (!cached) continue;
+    const { market } = cached;
+    if (!market.active) continue;
+
+    const secsRemaining = getSecondsRemainingForWindow(
+      parseInt(market.slug.split("-").pop() || "0", 10)
+    );
+    if (secsRemaining <= 0) continue;
+
+    assetMarkets.push({ asset, market });
+    tokenRequests.push(
+      { token_id: market.yesTokenId, side: Side.BUY },
+      { token_id: market.noTokenId, side: Side.BUY },
+    );
+  }
+
+  if (tokenRequests.length === 0) return;
+
+  // Single batched CLOB call for all assets
+  try {
+    const client = getReadOnlyClient();
+    const midpoints = await client.getMidpoints(tokenRequests);
+
+    for (const { asset, market } of assetMarkets) {
+      const yesPrice = parseFloat(midpoints?.[market.yesTokenId] || "0.5");
+      const noPrice = parseFloat(midpoints?.[market.noTokenId] || "0.5");
+      const windowTs = parseInt(market.slug.split("-").pop() || "0", 10);
+      const secsRemaining = getSecondsRemainingForWindow(windowTs);
+
+      if (secsRemaining > 0) {
+        const state: ActiveMarketState = {
+          asset,
+          conditionId: market.conditionId,
+          slug: market.slug,
+          yesTokenId: market.yesTokenId,
+          noTokenId: market.noTokenId,
+          yesPrice,
+          noPrice,
+          combinedCost: yesPrice + noPrice,
+          secondsRemaining: secsRemaining,
+          market,
+          tickSize: market.tickSize,
+          negRisk: market.negRisk,
+        };
+        activeMarkets.set(asset, state);
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn(`[Scanner] Batched price poll failed: ${msg}`);
   }
 }
 
@@ -344,17 +399,24 @@ export function getRecentOutcomes(assets?: MarketAsset[]): WindowOutcome[] {
 }
 
 export function startMarketScanner(enabledAssets: MarketAsset[]) {
-  // Initial scan
+  // Initial full scan (market discovery + prices)
   scanMarkets(enabledAssets).catch((err) => {
     logger.error(`[Scanner] Initial scan failed: ${err}`);
   });
 
-  // Poll every 5 seconds for fresh prices (lower CPU/network usage on VPS)
+  // Market discovery: re-check Gamma every 30s (handles window rotations)
   scanInterval = setInterval(() => {
     scanMarkets(enabledAssets).catch((err) => {
       logger.error(`[Scanner] Scan failed: ${err}`);
     });
-  }, 5000);
+  }, 30000);
+
+  // Fast price-only poll: every 2s using cached market info + batched CLOB call
+  priceInterval = setInterval(() => {
+    pollPricesOnly(enabledAssets).catch((err) => {
+      logger.error(`[Scanner] Price poll failed: ${err}`);
+    });
+  }, 2000);
 
   logger.info(`[Scanner] Started for assets: ${enabledAssets.join(", ")}`);
 }
@@ -364,7 +426,12 @@ export function stopMarketScanner() {
     clearInterval(scanInterval);
     scanInterval = null;
   }
+  if (priceInterval) {
+    clearInterval(priceInterval);
+    priceInterval = null;
+  }
   activeMarkets.clear();
+  marketInfoCache.clear();
   logger.info("[Scanner] Stopped");
 }
 
