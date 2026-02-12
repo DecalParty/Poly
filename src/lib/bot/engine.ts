@@ -298,24 +298,36 @@ function refreshWalletBalance() {
   walletBalanceFetchTime = now;
 
   const privateKey = process.env.PRIVATE_KEY;
+  const funderAddress = process.env.FUNDER_ADDRESS;
   if (!privateKey) return;
 
   try {
     const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
     const provider = new StaticJsonRpcProvider(rpcUrl, 137);
     const wallet = new Wallet(privateKey, provider);
-    cachedWalletAddress = wallet.address;
+    cachedWalletAddress = funderAddress || wallet.address;
 
-    // Always fetch on-chain USDC.e first (works without CLOB auth)
-    const usdcAddress = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
     const erc20Abi = ["function balanceOf(address) view returns (uint256)"];
-    const usdc = new Contract(usdcAddress, erc20Abi, provider);
+    // Check both USDC.e and native USDC on Polygon
+    const usdcE = new Contract("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", erc20Abi, provider);
+    const usdcNative = new Contract("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", erc20Abi, provider);
 
-    usdc.balanceOf(wallet.address).then((raw: any) => {
-      const onChain = Number(raw) / 1e6;
+    // Check balances at both EOA and funder address (proxy wallet)
+    const addresses = [wallet.address];
+    if (funderAddress && funderAddress.toLowerCase() !== wallet.address.toLowerCase()) {
+      addresses.push(funderAddress);
+    }
+
+    Promise.all(
+      addresses.flatMap((addr) => [
+        usdcE.balanceOf(addr).then((r: any) => Number(r) / 1e6).catch(() => 0),
+        usdcNative.balanceOf(addr).then((r: any) => Number(r) / 1e6).catch(() => 0),
+      ])
+    ).then((balances) => {
+      const onChain = balances.reduce((sum, b) => sum + b, 0);
       cachedWalletBalance = onChain;
 
-      // Then try to add Polymarket exchange balance on top (if CLOB client is ready)
+      // Also check Polymarket exchange balance (if CLOB client is ready)
       if (clobReady) {
         getClobClient().then((client) => {
           if (!client) return;
@@ -324,15 +336,13 @@ function refreshWalletBalance() {
             const parsed = parseFloat(rawBalance);
             const exchange = parsed > 1_000_000 ? parsed / 1e6 : parsed;
             cachedWalletBalance = onChain + exchange;
-            logger.info(`[Wallet] on-chain=$${onChain.toFixed(2)} exchange=$${exchange.toFixed(2)} raw="${rawBalance}"`);
-          }).catch((err: any) => {
-            logger.warn(`[Wallet] Exchange balance fetch failed: ${err?.message || err}`);
-          });
+            logger.info(`[Wallet] on-chain=$${onChain.toFixed(2)} exchange=$${exchange.toFixed(2)} raw="${rawBalance}" addresses=${addresses.join(",")}`);
+          }).catch(() => {});
         }).catch(() => {});
+      } else {
+        logger.info(`[Wallet] on-chain=$${onChain.toFixed(2)} (balances: ${balances.map(b => b.toFixed(2)).join(", ")}) addresses=${addresses.join(",")}`);
       }
-    }).catch(() => {
-      // Silently fail - balance just stays stale
-    });
+    }).catch(() => {});
   } catch {
     // Ignore - will retry on next cycle
   }

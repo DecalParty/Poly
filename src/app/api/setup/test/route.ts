@@ -67,17 +67,30 @@ export async function GET() {
     try {
       const provider = new StaticJsonRpcProvider(rpcUrl, 137);
       const wallet = new Wallet(privateKey!, provider);
-
-      // Check on-chain USDC.e
-      const usdcAddress = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
-      const erc20Abi = ["function balanceOf(address) view returns (uint256)"];
       const { Contract } = await import("@ethersproject/contracts");
-      const usdc = new Contract(usdcAddress, erc20Abi, provider);
-      const raw = await Promise.race([
-        usdc.balanceOf(wallet.address),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
+      const erc20Abi = ["function balanceOf(address) view returns (uint256)"];
+
+      // Check both USDC.e and native USDC at both EOA and funder (proxy) address
+      const usdcE = new Contract("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", erc20Abi, provider);
+      const usdcNative = new Contract("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", erc20Abi, provider);
+
+      const addresses = [wallet.address];
+      if (funderAddress && funderAddress.toLowerCase() !== wallet.address.toLowerCase()) {
+        addresses.push(funderAddress);
+      }
+
+      const balanceResults = await Promise.race([
+        Promise.all(
+          addresses.flatMap((addr) => [
+            usdcE.balanceOf(addr).then((r: any) => ({ addr, token: "USDC.e", val: Number(r) / 1e6 })).catch(() => ({ addr, token: "USDC.e", val: 0 })),
+            usdcNative.balanceOf(addr).then((r: any) => ({ addr, token: "USDC", val: Number(r) / 1e6 })).catch(() => ({ addr, token: "USDC", val: 0 })),
+          ])
+        ),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 8000)),
       ]);
-      const onChainBalance = Number(raw) / 1e6;
+
+      const onChainBalance = balanceResults.reduce((sum, b) => sum + b.val, 0);
+      console.log(`[Setup] On-chain balances: ${balanceResults.map(b => `${b.token}@${b.addr.slice(0,6)}=$${b.val.toFixed(2)}`).join(", ")}`);
 
       // Check Polymarket exchange balance (deposited USDC)
       let exchangeBalance = 0;
@@ -89,9 +102,7 @@ export async function GET() {
         if (client) {
           const resp = await client.getBalanceAllowance({ asset_type: "COLLATERAL" as any });
           const rawBalance = resp?.balance || "0";
-          // CLOB API may return balance in raw units (divide by 1e6) or human-readable
           const parsed = parseFloat(rawBalance);
-          // If parsed > 1000000, it's likely raw USDC units (6 decimals)
           exchangeBalance = parsed > 1_000_000 ? parsed / 1e6 : parsed;
           console.log(`[Setup] Exchange balance raw="${rawBalance}" parsed=${exchangeBalance}`);
         }
@@ -102,15 +113,19 @@ export async function GET() {
       const totalBalance = onChainBalance + exchangeBalance;
       const parts: string[] = [];
       if (exchangeBalance > 0) parts.push(`$${exchangeBalance.toFixed(2)} exchange`);
-      if (onChainBalance > 0) parts.push(`$${onChainBalance.toFixed(2)} wallet`);
+      if (onChainBalance > 0) parts.push(`$${onChainBalance.toFixed(2)} on-chain`);
+
+      const displayAddr = funderAddress
+        ? `${funderAddress.slice(0, 6)}...${funderAddress.slice(-4)}`
+        : `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`;
 
       // Wallet is connected if we can read the address - balance is informational
       results.wallet = {
         ok: true,
         label: "Wallet",
         detail: totalBalance > 0
-          ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)} | ${parts.join(" + ")}`
-          : `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)} | $0.00 available (funds may be in active positions)`,
+          ? `${displayAddr} | ${parts.join(" + ")}`
+          : `${displayAddr} | $0.00 available (funds may be in active positions)`,
       };
     } catch (err) {
       results.wallet = {
