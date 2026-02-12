@@ -76,7 +76,7 @@ let priceBroadcastInterval: ReturnType<typeof setInterval> | null = null;
 // Cached settings
 let cachedSettings: BotSettings | null = null;
 let settingsCacheTime = 0;
-const SETTINGS_CACHE_MS = 5000;
+const SETTINGS_CACHE_MS = 2000;
 
 function getCachedSettings(): BotSettings {
   const now = Date.now();
@@ -712,7 +712,7 @@ async function tradingLoop() {
 
 // ---- Bot Controls ----
 
-export function startBot(): { success: boolean; error?: string } {
+export async function startBot(): Promise<{ success: boolean; error?: string }> {
   if (botStatus === "running") {
     return { success: false, error: "Bot is already running" };
   }
@@ -735,21 +735,21 @@ export function startBot(): { success: boolean; error?: string } {
   ensureScannerRunning();
   addAlert("info", `Market scanner active for: ${settings.enabledAssets.join(", ")}`);
 
-  // Check CLOB client readiness (non-blocking)
+  // Eagerly initialize CLOB client so first order has zero init delay
   if (!settings.paperTrading) {
-    getClobClient().then((client) => {
+    try {
+      const client = await getClobClient();
       clobReady = !!client;
       if (clobReady) {
         addAlert("success", "CLOB client connected - live trading ready");
       } else {
         addAlert("error", "CLOB client failed - check PRIVATE_KEY and FUNDER_ADDRESS in .env.local");
       }
-      broadcastState();
-    }).catch(() => {
+    } catch {
       clobReady = false;
       addAlert("error", "CLOB client initialization failed");
-      broadcastState();
-    });
+    }
+    broadcastState();
   } else {
     clobReady = false;
     addAlert("info", "Paper mode - CLOB client not needed");
@@ -758,8 +758,8 @@ export function startBot(): { success: boolean; error?: string } {
   // Initial market fetch
   refreshMarket();
 
-  // Main trading loop - runs every 3 seconds (optimized for VPS)
-  loopInterval = setInterval(tradingLoop, 3000);
+  // Main trading loop - runs every 1 second for fastest reaction
+  loopInterval = setInterval(tradingLoop, 1000);
 
   // Market structure refresh - every 30 seconds (reduced for VPS)
   marketRefreshInterval = setInterval(refreshMarket, 30000);

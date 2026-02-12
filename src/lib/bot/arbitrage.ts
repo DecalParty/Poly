@@ -172,26 +172,28 @@ async function placeLadderOrders(
     };
 
     if (!paperTrading) {
-      // Place real limit orders
-      const upResult = await placeLimitBuyOrder(
-        market.yesTokenId,
-        level.price,
-        upShares,
-        market.tickSize,
-        market.negRisk,
-      );
+      // Place both sides in parallel for speed
+      const [upResult, downResult] = await Promise.all([
+        placeLimitBuyOrder(
+          market.yesTokenId,
+          level.price,
+          upShares,
+          market.tickSize,
+          market.negRisk,
+        ),
+        placeLimitBuyOrder(
+          market.noTokenId,
+          level.price,
+          downShares,
+          market.tickSize,
+          market.negRisk,
+        ),
+      ]);
+
       if (upResult.success && upResult.orderId) {
         upOrder.orderId = upResult.orderId;
         upOrder.status = "placed";
       }
-
-      const downResult = await placeLimitBuyOrder(
-        market.noTokenId,
-        level.price,
-        downShares,
-        market.tickSize,
-        market.negRisk,
-      );
       if (downResult.success && downResult.orderId) {
         downOrder.orderId = downResult.orderId;
         downOrder.status = "placed";

@@ -44,8 +44,10 @@ axios.interceptors.request.use((config) => {
   config.headers["User-Agent"] = BROWSER_UA;
   config.headers["Accept"] = "application/json, text/plain, */*";
   config.headers["Accept-Language"] = "en-US,en;q=0.9";
+  config.headers["Connection"] = "keep-alive";
   config.httpAgent = config.httpAgent || tlsAgent;
   config.httpsAgent = config.httpsAgent || tlsAgent;
+  config.timeout = config.timeout || 5000;
   return config;
 });
 

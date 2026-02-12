@@ -411,12 +411,12 @@ export function startMarketScanner(enabledAssets: MarketAsset[]) {
     });
   }, 30000);
 
-  // Fast price-only poll: every 2s using cached market info + batched CLOB call
+  // Fast price-only poll: every 1s using cached market info + batched CLOB call
   priceInterval = setInterval(() => {
     pollPricesOnly(enabledAssets).catch((err) => {
       logger.error(`[Scanner] Price poll failed: ${err}`);
     });
-  }, 2000);
+  }, 1000);
 
   logger.info(`[Scanner] Started for assets: ${enabledAssets.join(", ")}`);
 }

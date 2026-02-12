@@ -5,7 +5,7 @@ import type { ApiResponse } from "@/types";
 
 export async function POST(): Promise<NextResponse<ApiResponse>> {
   await ensureDb();
-  const result = startBot();
+  const result = await startBot();
 
   if (!result.success) {
     return NextResponse.json(
