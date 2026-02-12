@@ -1,34 +1,59 @@
+import https from "https";
 import { Side } from "@polymarket/clob-client";
 import { getReadOnlyClient } from "./client";
 import type { MarketInfo, MarketPrices } from "@/types";
 import { logger } from "../logger";
 
-const GAMMA_API = process.env.GAMMA_API_URL || "https://gamma-api.polymarket.com";
+const GAMMA_API_HOST = "gamma-api.polymarket.com";
 
 /**
- * Fetch JSON from Gamma API using native fetch (axios gets blocked by Polymarket CDN on VPS).
+ * Fetch JSON from Gamma API using Node https module.
+ * Next.js patches global fetch and adds headers that Polymarket CDN blocks.
+ * Node https is not patched.
  */
+function httpsGetJson<T>(path: string, params: Record<string, string>): Promise<T> {
+  const qs = new URLSearchParams(params).toString();
+  const fullPath = `${path}?${qs}`;
+  return new Promise<T>((resolve, reject) => {
+    const req = https.get(
+      {
+        hostname: GAMMA_API_HOST,
+        path: fullPath,
+        headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
+        timeout: 10000,
+      },
+      (res) => {
+        if (res.statusCode && res.statusCode >= 400) {
+          const err: any = new Error(`${res.statusCode} ${res.statusMessage}`);
+          err.status = res.statusCode;
+          res.resume();
+          reject(err);
+          return;
+        }
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          try { resolve(JSON.parse(data) as T); }
+          catch (e) { reject(e); }
+        });
+      }
+    );
+    req.on("error", reject);
+    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+  });
+}
+
 async function fetchGamma<T>(path: string, params: Record<string, string>, retries = 3): Promise<T> {
-  const url = `${GAMMA_API}${path}?${new URLSearchParams(params).toString()}`;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      const resp = await fetch(url, {
-        headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!resp.ok) {
-        const err = new Error(`${resp.status} ${resp.statusText}`);
-        (err as any).status = resp.status;
-        throw err;
-      }
-      return (await resp.json()) as T;
+      return await httpsGetJson<T>(path, params);
     } catch (err: any) {
       const isLast = attempt === retries - 1;
       if (isLast) throw err;
       const status = err.status as number | undefined;
       if (status && status >= 400 && status < 500 && status !== 429) throw err;
       const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
-      logger.warn(`[Markets] ${url} failed (attempt ${attempt + 1}/${retries}), retrying in ${delay}ms`);
+      logger.warn(`[Markets] ${path}?${new URLSearchParams(params)} failed (attempt ${attempt + 1}/${retries}), retrying in ${delay}ms`);
       await new Promise((r) => setTimeout(r, delay));
     }
   }
