@@ -48,6 +48,8 @@ export default function DashboardPage() {
         cumulativePnl={state.cumulativePnl}
         totalTrades={state.totalTrades}
         clobReady={state.clobReady}
+        walletBalance={state.walletBalance}
+        walletAddress={state.walletAddress}
         onSettingsClick={() => setSettingsOpen(true)}
       />
 

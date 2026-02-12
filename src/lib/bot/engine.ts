@@ -11,6 +11,9 @@ import { arbTick, getArbState, getArbStats, setArbCallbacks, getArbCapitalDeploy
 import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount } from "../db/queries";
 import { startMarketScanner, stopMarketScanner, getActiveMarkets, getActiveMarketForAsset, getRecentOutcomes, markOutcomeResolved } from "../prices/market-scanner";
 import { getClobClient } from "../polymarket/client";
+import { Wallet } from "@ethersproject/wallet";
+import { StaticJsonRpcProvider } from "@ethersproject/providers";
+import { Contract } from "@ethersproject/contracts";
 import { logger } from "../logger";
 import type {
   BotState,
@@ -91,6 +94,12 @@ export function invalidateSettingsCache() {
 
 // CLOB client readiness
 let clobReady = false;
+
+// Wallet balance cache
+let cachedWalletBalance: number | null = null;
+let cachedWalletAddress: string | null = null;
+let walletBalanceFetchTime = 0;
+const WALLET_BALANCE_CACHE_MS = 30_000; // refresh every 30s
 
 // Track last logged decision per asset to avoid spamming
 const lastLoggedDecision: Record<string, { reason: string; time: number }> = {};
@@ -281,13 +290,46 @@ function checkCircuitBreaker(settings: BotSettings): boolean {
   return false;
 }
 
+// ---- Wallet Balance ----
+
+function refreshWalletBalance() {
+  const now = Date.now();
+  if (now - walletBalanceFetchTime < WALLET_BALANCE_CACHE_MS) return;
+  walletBalanceFetchTime = now;
+
+  const privateKey = process.env.PRIVATE_KEY;
+  const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
+  if (!privateKey) return;
+
+  try {
+    const provider = new StaticJsonRpcProvider(rpcUrl, 137);
+    const wallet = new Wallet(privateKey, provider);
+    cachedWalletAddress = wallet.address;
+
+    const usdcAddress = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+    const erc20Abi = ["function balanceOf(address) view returns (uint256)"];
+    const usdc = new Contract(usdcAddress, erc20Abi, provider);
+
+    usdc.balanceOf(wallet.address).then((raw: any) => {
+      cachedWalletBalance = Number(raw) / 1e6;
+    }).catch(() => {
+      // Silently fail - balance just stays stale
+    });
+  } catch {
+    // Ignore - will retry on next cycle
+  }
+}
+
 // ---- State Getters ----
 
 export function getState(): BotState {
-  const settings = getCachedSettings();
-  const secondsRemaining = getSecondsRemaining();
+const settings = getCachedSettings();
+const secondsRemaining = getSecondsRemaining();
 
-  let eligible = false;
+// Kick off async wallet balance refresh (non-blocking, cached)
+refreshWalletBalance();
+
+let eligible = false;
   let ineligibleReason: string | undefined;
 
   if (!currentMarket) {
@@ -352,6 +394,8 @@ export function getState(): BotState {
     alerts: alerts.slice(0, 50),
     arbState: getArbState(),
     arbStats: getArbStats(),
+    walletBalance: cachedWalletBalance,
+    walletAddress: cachedWalletAddress,
   };
 }
 

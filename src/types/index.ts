@@ -285,6 +285,8 @@ export interface BotState {
   alerts: AlertItem[];
   arbState: ArbWindowState | null;
   arbStats: ArbStats;
+  walletBalance: number | null;
+  walletAddress: string | null;
 }
 
 // ─── SSE Events ──────────────────────────────────────────────────────────────

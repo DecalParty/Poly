@@ -47,6 +47,8 @@ const DEFAULT_STATE: BotState = {
   clobReady: false,
   alerts: [],
   arbState: null,
+  walletBalance: null,
+  walletAddress: null,
   arbStats: {
     windowsPlayed: 0,
     bothSidesFilled: 0,

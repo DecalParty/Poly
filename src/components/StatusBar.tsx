@@ -12,12 +12,14 @@ interface StatusBarProps {
   cumulativePnl: number;
   totalTrades: number;
   clobReady: boolean;
+  walletBalance: number | null;
+  walletAddress: string | null;
   onSettingsClick?: () => void;
 }
 
 export default function StatusBar({
   botStatus, connection, sseConnected, lastAction, lastActionTime,
-  paperTrading, cumulativePnl, totalTrades, clobReady, onSettingsClick,
+  paperTrading, cumulativePnl, totalTrades, clobReady, walletBalance, walletAddress, onSettingsClick,
 }: StatusBarProps) {
   const isRunning = botStatus === "running";
 
@@ -59,6 +61,24 @@ export default function StatusBar({
             <div className="flex items-center gap-1" title="Polymarket CLOB API">
               <div className={`w-1.5 h-1.5 rounded-full ${clobReady ? "bg-emerald-400" : "bg-red-400"}`} />
               <span className="text-[10px] text-gray-600">CLOB</span>
+            </div>
+          </>
+        )}
+
+        {/* Wallet balance */}
+        {walletBalance !== null && (
+          <>
+            <div className="w-px h-4 bg-white/[0.06]" />
+            <div className="flex items-center gap-1.5" title={walletAddress || "Wallet"}>
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-gray-500">
+                <rect x="1" y="4" width="14" height="10" rx="2" />
+                <path d="M1 7h14" />
+                <path d="M4 1v3" />
+              </svg>
+              <span className="mono text-[12px] font-bold text-gray-200">${walletBalance.toFixed(2)}</span>
+              {walletAddress && (
+                <span className="text-[10px] text-gray-600">{walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}</span>
+              )}
             </div>
           </>
         )}
