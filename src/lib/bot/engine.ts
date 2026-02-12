@@ -306,26 +306,28 @@ function refreshWalletBalance() {
     const wallet = new Wallet(privateKey, provider);
     cachedWalletAddress = wallet.address;
 
-    // Check Polymarket exchange balance (deposited USDC available to trade)
-    getClobClient().then(async (client) => {
-      if (!client) return;
-      try {
-        const resp = await client.getBalanceAllowance({ asset_type: "COLLATERAL" as any });
-        const exchangeBalance = parseFloat(resp?.balance || "0") / 1e6;
-        cachedWalletBalance = exchangeBalance;
-      } catch {
-        // Fallback to on-chain USDC.e
-        try {
-          const usdcAddress = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
-          const erc20Abi = ["function balanceOf(address) view returns (uint256)"];
-          const usdc = new Contract(usdcAddress, erc20Abi, provider);
-          const raw = await usdc.balanceOf(wallet.address);
-          cachedWalletBalance = Number(raw) / 1e6;
-        } catch {
-          // Silently fail - balance just stays stale
-        }
+    // Always fetch on-chain USDC.e first (works without CLOB auth)
+    const usdcAddress = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+    const erc20Abi = ["function balanceOf(address) view returns (uint256)"];
+    const usdc = new Contract(usdcAddress, erc20Abi, provider);
+
+    usdc.balanceOf(wallet.address).then((raw: any) => {
+      const onChain = Number(raw) / 1e6;
+      cachedWalletBalance = onChain;
+
+      // Then try to add Polymarket exchange balance on top (if CLOB client is ready)
+      if (clobReady) {
+        getClobClient().then((client) => {
+          if (!client) return;
+          client.getBalanceAllowance({ asset_type: "COLLATERAL" as any }).then((resp: any) => {
+            const exchange = parseFloat(resp?.balance || "0") / 1e6;
+            cachedWalletBalance = onChain + exchange;
+          }).catch(() => {});
+        }).catch(() => {});
       }
-    }).catch(() => {});
+    }).catch(() => {
+      // Silently fail - balance just stays stale
+    });
   } catch {
     // Ignore - will retry on next cycle
   }
