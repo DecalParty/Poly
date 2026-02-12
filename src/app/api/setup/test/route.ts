@@ -88,7 +88,12 @@ export async function GET() {
         ]);
         if (client) {
           const resp = await client.getBalanceAllowance({ asset_type: "COLLATERAL" as any });
-          exchangeBalance = parseFloat(resp?.balance || "0") / 1e6;
+          const rawBalance = resp?.balance || "0";
+          // CLOB API may return balance in raw units (divide by 1e6) or human-readable
+          const parsed = parseFloat(rawBalance);
+          // If parsed > 1000000, it's likely raw USDC units (6 decimals)
+          exchangeBalance = parsed > 1_000_000 ? parsed / 1e6 : parsed;
+          console.log(`[Setup] Exchange balance raw="${rawBalance}" parsed=${exchangeBalance}`);
         }
       } catch {
         // Exchange balance unavailable

@@ -320,9 +320,14 @@ function refreshWalletBalance() {
         getClobClient().then((client) => {
           if (!client) return;
           client.getBalanceAllowance({ asset_type: "COLLATERAL" as any }).then((resp: any) => {
-            const exchange = parseFloat(resp?.balance || "0") / 1e6;
+            const rawBalance = resp?.balance || "0";
+            const parsed = parseFloat(rawBalance);
+            const exchange = parsed > 1_000_000 ? parsed / 1e6 : parsed;
             cachedWalletBalance = onChain + exchange;
-          }).catch(() => {});
+            logger.info(`[Wallet] on-chain=$${onChain.toFixed(2)} exchange=$${exchange.toFixed(2)} raw="${rawBalance}"`);
+          }).catch((err: any) => {
+            logger.warn(`[Wallet] Exchange balance fetch failed: ${err?.message || err}`);
+          });
         }).catch(() => {});
       }
     }).catch(() => {
