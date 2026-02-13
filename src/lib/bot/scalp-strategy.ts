@@ -1,28 +1,34 @@
 /**
  * Scalp Strategy -- Fair Value Estimation + Entry/Exit Signals
  *
- * Uses BTC % change from window open (Binance) to estimate what
- * Polymarket UP/DOWN share prices "should" be. When actual price
- * lags behind by minGap ? buy. When price catches up ? sell.
+ * Uses BTC % change from window open (Binance, tracks Chainlink)
+ * to estimate what Polymarket UP/DOWN share prices "should" be.
+ * When actual price lags behind by minGap -> buy. When price
+ * catches up -> sell.
+ *
+ * Fair value is TIME-WEIGHTED: early in the window BTC can reverse,
+ * so values stay closer to $0.50. Late in the window the move is
+ * more established, so values diverge more.
  */
 
-// ??? Fair Value Lookup Table ?????????????????????????????????????????????????
-// Maps absolute BTC % change ? fair value for the winning side.
-// Losing side = 1 - fairValue. Interpolated linearly between points.
+// -- Fair Value Lookup Table --------------------------------------------------
+// Maps absolute BTC % change -> fair value for the winning side at END of window.
+// These are the "fully confident" values. Time-weighting dampens them early.
+// Flattened to match observed Polymarket market maker pricing.
 const FAIR_VALUE_TABLE = [
   { change: 0.0000, value: 0.500 },
-  { change: 0.0003, value: 0.510 },  // 0.03%
-  { change: 0.0005, value: 0.520 },  // 0.05%
-  { change: 0.0010, value: 0.555 },  // 0.10%
-  { change: 0.0015, value: 0.580 },  // 0.15%
-  { change: 0.0020, value: 0.625 },  // 0.20%
-  { change: 0.0025, value: 0.665 },  // 0.25%
-  { change: 0.0030, value: 0.720 },  // 0.30%
-  { change: 0.0040, value: 0.780 },  // 0.40%
-  { change: 0.0050, value: 0.850 },  // 0.50%
-  { change: 0.0075, value: 0.920 },  // 0.75%
-  { change: 0.0100, value: 0.960 },  // 1.00%
-  { change: 0.0150, value: 0.980 },  // 1.50%
+  { change: 0.0003, value: 0.505 },  // 0.03% -- barely moved
+  { change: 0.0005, value: 0.510 },  // 0.05%
+  { change: 0.0010, value: 0.530 },  // 0.10%
+  { change: 0.0015, value: 0.550 },  // 0.15%
+  { change: 0.0020, value: 0.575 },  // 0.20%
+  { change: 0.0025, value: 0.600 },  // 0.25%
+  { change: 0.0030, value: 0.640 },  // 0.30%
+  { change: 0.0040, value: 0.710 },  // 0.40%
+  { change: 0.0050, value: 0.780 },  // 0.50%
+  { change: 0.0075, value: 0.870 },  // 0.75%
+  { change: 0.0100, value: 0.930 },  // 1.00%
+  { change: 0.0150, value: 0.970 },  // 1.50%
 ];
 
 function interpolate(absChange: number): number {
@@ -42,12 +48,31 @@ function interpolate(absChange: number): number {
 }
 
 /**
- * Compute fair values for UP and DOWN shares based on BTC % change.
- * Returns { up, down } where each is 0.00 -- 1.00.
+ * Compute fair values for UP and DOWN shares based on BTC % change
+ * and time remaining in the window.
+ *
+ * Time-weighting: early in window (12+ min left), fair value is dampened
+ * heavily toward $0.50 because BTC can easily reverse. Late in window
+ * (< 3 min), the table value is used almost fully.
+ *
+ * timeFactor formula: sqrt(elapsed / 900)
+ *   - 0 min elapsed (900s left) -> timeFactor ~0.0 -> fair ~$0.50
+ *   - 5 min elapsed (600s left) -> timeFactor ~0.58
+ *   - 10 min elapsed (300s left) -> timeFactor ~0.82
+ *   - 13 min elapsed (120s left) -> timeFactor ~0.93
+ *   - 15 min elapsed (0s left) -> timeFactor 1.0
  */
-export function computeFairValue(btcChangePercent: number): { up: number; down: number } {
+export function computeFairValue(
+  btcChangePercent: number,
+  secondsRemaining: number = 0
+): { up: number; down: number } {
   const absChange = Math.abs(btcChangePercent);
-  const winningFair = interpolate(absChange);
+  const rawFair = interpolate(absChange);
+
+  // Time-weight: dampen toward 0.50 when lots of time remains
+  const elapsed = Math.max(0, 900 - secondsRemaining);
+  const timeFactor = Math.sqrt(Math.min(1, elapsed / 900));
+  const winningFair = 0.50 + (rawFair - 0.50) * timeFactor;
 
   if (btcChangePercent >= 0) {
     return { up: winningFair, down: 1 - winningFair };
@@ -86,10 +111,11 @@ export function evaluateScalpEntry(
   minGap: number,
   entryMin: number,
   entryMax: number,
+  secondsRemaining: number = 450,
 ): ScalpEntrySignal | null {
   if (isBtcFlat(btcChangePercent)) return null;
 
-  const fair = computeFairValue(btcChangePercent);
+  const fair = computeFairValue(btcChangePercent, secondsRemaining);
   const upGap = fair.up - yesPrice;
   const downGap = fair.down - noPrice;
 
@@ -150,7 +176,7 @@ export function evaluateScalpExit(
   secondsRemaining: number,
   profitTarget: number,
 ): ScalpExitSignal {
-  const fair = computeFairValue(btcChangePercent);
+  const fair = computeFairValue(btcChangePercent, secondsRemaining);
   const fairForSide = positionSide === "yes" ? fair.up : fair.down;
 
   // Trail: if fair value suggests a higher sell, raise the limit

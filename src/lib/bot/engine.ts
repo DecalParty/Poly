@@ -443,7 +443,10 @@ export function getState(): BotState {
   }
 
   const btcChange = getBtcWindowChange();
-  const fair = computeFairValue(btcChange);
+  // Use first active market's secondsRemaining for dashboard fair value display
+  const statusActiveMarkets = getActiveMarkets();
+  const displaySecsRemaining = statusActiveMarkets.length > 0 ? statusActiveMarkets[0].secondsRemaining : 450;
+  const fair = computeFairValue(btcChange, displaySecsRemaining);
 
   return {
     status: botStatus,
@@ -542,7 +545,6 @@ async function tradingLoop() {
     const activeMarkets = getActiveMarkets();
     const now = Date.now();
     const btcChange = getBtcWindowChange();
-    const fair = computeFairValue(btcChange);
     const binanceFresh = isBinanceFresh();
 
     // ---- 1. Check pending buy orders for fills ----
@@ -741,7 +743,8 @@ async function tradingLoop() {
         }
         pos.sellPrice = newSellPrice;
         pos.sellOrderId = newSellOrderId;
-        broadcastLog(`Trail sell: ${pos.side.toUpperCase()} $${pos.sellPrice.toFixed(2)} (fair $${(pos.side === "yes" ? fair.up : fair.down).toFixed(2)})`);
+        const trailFair = computeFairValue(btcChange, secsRemaining);
+        broadcastLog(`Trail sell: ${pos.side.toUpperCase()} $${pos.sellPrice.toFixed(2)} (fair $${(pos.side === "yes" ? trailFair.up : trailFair.down).toFixed(2)})`);
       } else if (exitSignal.action === "sell_profit" || exitSignal.action === "sell_loss") {
         // Time-based exit: cancel limit sell, place market sell
         if (pos.sellOrderId && !settings.paperTrading) {
@@ -889,7 +892,8 @@ async function tradingLoop() {
 
           const signal = evaluateScalpEntry(
             btcChange, market.yesPrice, market.noPrice,
-            settings.scalpMinGap, settings.scalpEntryMin, settings.scalpEntryMax
+            settings.scalpMinGap, settings.scalpEntryMin, settings.scalpEntryMax,
+            market.secondsRemaining
           );
 
           // Diagnostic log every 15s showing why we skipped or what signal we got
@@ -897,14 +901,16 @@ async function tradingLoop() {
           const lastDiag = lastLoggedDecision[diagKey];
           if (!lastDiag || now - lastDiag.time >= 15000) {
             lastLoggedDecision[diagKey] = { reason: "diag", time: now };
-            const fair = computeFairValue(btcChange);
+            const fair = computeFairValue(btcChange, market.secondsRemaining);
             const upGap = fair.up - market.yesPrice;
             const downGap = fair.down - market.noPrice;
             const flat = Math.abs(btcChange) < 0.0005;
+            const timeMin = Math.floor(market.secondsRemaining / 60);
+            const timeSec = market.secondsRemaining % 60;
             if (flat) {
-              broadcastLog(`[${market.asset}] BTC flat (${(btcChange * 100).toFixed(3)}%) - skipping | BTC $${getBinancePrice().toFixed(0)} | YES $${market.yesPrice.toFixed(2)} NO $${market.noPrice.toFixed(2)}`);
+              broadcastLog(`[${market.asset}] BTC flat (${(btcChange * 100).toFixed(3)}%) ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC $${getBinancePrice().toFixed(0)} | YES $${market.yesPrice.toFixed(2)} NO $${market.noPrice.toFixed(2)}`);
             } else if (!signal) {
-              broadcastLog(`[${market.asset}] No signal | BTC ${(btcChange * 100).toFixed(3)}% | Fair UP $${fair.up.toFixed(2)} DOWN $${fair.down.toFixed(2)} | Gap UP ${upGap >= 0 ? "+" : ""}${upGap.toFixed(2)} DOWN ${downGap >= 0 ? "+" : ""}${downGap.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+ in $${settings.scalpEntryMin}-$${settings.scalpEntryMax}`);
+              broadcastLog(`[${market.asset}] No signal ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC ${(btcChange * 100).toFixed(3)}% | Fair UP $${fair.up.toFixed(2)} DOWN $${fair.down.toFixed(2)} | Gap UP ${upGap >= 0 ? "+" : ""}${upGap.toFixed(2)} DOWN ${downGap >= 0 ? "+" : ""}${downGap.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+`);
             }
           }
 
