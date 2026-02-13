@@ -913,8 +913,10 @@ async function tradingLoop() {
             const velDamp = (1 / (1 + Math.abs(velocity) * 400) * 100).toFixed(0);
             if (flat) {
               broadcastLog(`[${market.asset}] BTC flat (${(btcChange * 100).toFixed(3)}%) ${timeMin}:${timeSec.toString().padStart(2, "0")} left | YES $${market.yesPrice.toFixed(2)} NO $${market.noPrice.toFixed(2)}`);
+            } else if (Math.abs(upGap) > 0.20 || Math.abs(downGap) > 0.20) {
+              broadcastLog(`[${market.asset}] DESYNC ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC ${(btcChange * 100).toFixed(3)}% | UP $${market.yesPrice.toFixed(2)} fair $${fair.up.toFixed(2)} | DOWN $${market.noPrice.toFixed(2)} fair $${fair.down.toFixed(2)} | Window open mismatch, skipping`);
             } else if (!signal) {
-              broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC ${(btcChange * 100).toFixed(3)}% ${velStr} (${velDamp}% conf) | UP $${market.yesPrice.toFixed(2)} fair $${fair.up.toFixed(2)} gap ${upGap >= 0 ? "+" : ""}${upGap.toFixed(2)} | DOWN $${market.noPrice.toFixed(2)} fair $${fair.down.toFixed(2)} gap ${downGap >= 0 ? "+" : ""}${downGap.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+`);
+              broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC ${(btcChange * 100).toFixed(3)}% ${velStr} | UP $${market.yesPrice.toFixed(2)} fair $${fair.up.toFixed(2)} gap ${upGap >= 0 ? "+" : ""}${upGap.toFixed(2)} | DOWN $${market.noPrice.toFixed(2)} fair $${fair.down.toFixed(2)} gap ${downGap >= 0 ? "+" : ""}${downGap.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+`);
             }
           }
 

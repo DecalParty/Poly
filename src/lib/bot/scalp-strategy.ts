@@ -110,9 +110,11 @@ export interface ScalpEntrySignal {
  *
  * Either side can be undervalued. Prefers the side with the larger gap.
  *
- * Velocity is baked into fair value computation: fast BTC moves pull
- * fair values toward $0.50, naturally shrinking gaps and requiring
- * a bigger real undervaluation to trigger an entry.
+ * MARKET SANITY CHECK: If the gap between our fair value and the market
+ * price is too large (>$0.20), it means our window-open price doesn't
+ * match what Chainlink/Polymarket uses. The market knows the real BTC
+ * change -- we don't. Skip the trade to avoid buying the wrong side.
+ * Our edge is 1-2 second lag, not $0.20+ mispricing.
  */
 export function evaluateScalpEntry(
   btcChangePercent: number,
@@ -129,6 +131,12 @@ export function evaluateScalpEntry(
   const fair = computeFairValue(btcChangePercent, secondsRemaining, btcVelocity);
   const upGap = fair.up - yesPrice;
   const downGap = fair.down - noPrice;
+
+  // Market sanity check: if ANY gap exceeds $0.20, our window-open price
+  // is probably wrong. The market reflects Chainlink's real BTC change,
+  // not our Bitbo-derived estimate. Our edge is small (1-2 cent lag),
+  // not a $0.20+ mispricing.
+  if (Math.abs(upGap) > 0.20 || Math.abs(downGap) > 0.20) return null;
 
   // Check both sides
   const upValid = upGap >= minGap && yesPrice >= entryMin && yesPrice <= entryMax;
