@@ -10,7 +10,7 @@ import { recordResolution } from "./executor";
 import { insertTrade } from "../db/queries";
 import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount, getRecentTradeConditionIds } from "../db/queries";
 import { startMarketScanner, stopMarketScanner, getActiveMarkets, getActiveMarketForAsset, getRecentOutcomes, markOutcomeResolved } from "../prices/market-scanner";
-import { getClobClient, redeemWinnings, getClaimablePositions, placeLimitBuyOrder, placeLimitSellOrder, cancelOrder, getOrderStatus } from "../polymarket/client";
+import { getClobClient, redeemWinnings, getClaimablePositions, placeLimitBuyOrder, placeLimitSellOrder, cancelOrder, getOrderStatus, placeSellOrder } from "../polymarket/client";
 import { startBinanceWs, stopBinanceWs, getBinancePrice, getWindowOpenPrice, getBtcWindowChange, isBinanceFresh } from "../prices/binance-ws";
 import { Wallet } from "@ethersproject/wallet";
 import { StaticJsonRpcProvider } from "@ethersproject/providers";
@@ -642,7 +642,7 @@ async function tradingLoop() {
       const windowTs = pos.windowEndTs;
       const secsRemaining = Math.max(0, windowTs + 900 - Math.floor(now / 1000));
 
-      // Check if sell order filled
+      // Check if sell order filled (live) or price hit target (paper)
       if (pos.sellOrderId && !settings.paperTrading) {
         const sellStatus = await getOrderStatus(pos.sellOrderId);
         if (sellStatus) {
@@ -684,6 +684,36 @@ async function tradingLoop() {
             continue;
           }
         }
+      } else if (settings.paperTrading && currentPrice >= pos.sellPrice) {
+        // Paper mode: simulate fill at sell target
+        const pnl = pos.shares * pos.sellPrice - pos.costBasis;
+
+        insertTrade({
+          timestamp: new Date().toISOString(),
+          conditionId: pos.conditionId,
+          slug: pos.slug,
+          side: pos.side,
+          action: "sell",
+          price: pos.sellPrice,
+          amount: pos.shares * pos.sellPrice,
+          shares: pos.shares,
+          pnl,
+          paper: true,
+          orderId: null,
+          asset: pos.asset,
+          subStrategy: "scalp",
+          binancePriceAtEntry: null,
+          slippage: null,
+          takerFee: 0,
+        });
+
+        broadcastLog(`[PAPER] Scalp profit: ${pos.side.toUpperCase()} @ $${pos.sellPrice.toFixed(2)} | P&L: $${pnl.toFixed(4)}`);
+        addAlert("success", `Scalp sold @ $${pos.sellPrice.toFixed(2)} | +$${pnl.toFixed(4)}`, pos.asset);
+        lastAction = `Scalp sold ${pos.asset} @ $${pos.sellPrice.toFixed(2)}`;
+        lastActionTime = new Date().toISOString();
+
+        scalpPositions.splice(i, 1);
+        continue;
       }
 
       // Evaluate exit signal
@@ -716,7 +746,6 @@ async function tradingLoop() {
 
         if (!settings.paperTrading && am) {
           // Place aggressive sell to fill immediately
-          const { placeSellOrder } = await import("../polymarket/client");
           await placeSellOrder(pos.tokenId, sellPrice, pos.shares, am.tickSize, am.negRisk);
         }
 
