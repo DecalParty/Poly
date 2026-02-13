@@ -568,17 +568,25 @@ const NEG_RISK_ABI = [
   "function redeemPositions(bytes32 conditionId, uint256[] amounts)",
 ];
 
+const GNOSIS_SAFE_ABI = [
+  "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)",
+  "function getTransactionHash(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, uint256 _nonce) view returns (bytes32)",
+  "function nonce() view returns (uint256)",
+];
+
 /**
  * Redeem winning conditional tokens back to USDC after a market resolves.
- * This is the on-chain "Claim Earnings" step.
+ * Executes through the Gnosis Safe proxy wallet (FUNDER_ADDRESS) since
+ * that's where the conditional tokens are held.
  */
 export async function redeemWinnings(
   conditionId: string,
   negRisk: boolean
 ): Promise<{ success: boolean; error?: string }> {
   const privateKey = process.env.PRIVATE_KEY;
-  if (!privateKey) {
-    return { success: false, error: "No PRIVATE_KEY" };
+  const funderAddress = process.env.FUNDER_ADDRESS;
+  if (!privateKey || !funderAddress) {
+    return { success: false, error: "No PRIVATE_KEY or FUNDER_ADDRESS" };
   }
 
   try {
@@ -586,47 +594,71 @@ export async function redeemWinnings(
     const provider = new StaticJsonRpcProvider(rpcUrl, 137);
     const signer = new Wallet(privateKey, provider);
     const { Contract } = await import("@ethersproject/contracts");
+    const { Interface } = await import("@ethersproject/abi");
+    const { arrayify, hexlify } = await import("@ethersproject/bytes");
 
-    // Both outcomes: index 1 = YES (0b01), index 2 = NO (0b10)
+    const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+    const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
     const indexSets = [1, 2];
 
-    if (negRisk) {
-      // For neg-risk markets, use the NegRiskAdapter
-      const adapter = new Contract(NEG_RISK_ADAPTER, NEG_RISK_ABI, signer);
-
-      // Check if we have any tokens to redeem first
-      const ctf = new Contract(CTF_ADDRESS, CTF_ABI, provider);
-      // Token IDs are derived from conditionId + index
-      let hasTokens = false;
-      for (const idx of indexSets) {
-        try {
-          const tokenId = BigInt(conditionId) + BigInt(idx);
-          const bal = await ctf.balanceOf(signer.address, tokenId);
-          if (Number(bal) > 0) hasTokens = true;
-        } catch {
-          // Skip balance check, try redeem anyway
+    // Check if proxy wallet has any tokens to redeem
+    const ctf = new Contract(CTF_ADDRESS, CTF_ABI, provider);
+    let hasTokens = false;
+    for (const idx of indexSets) {
+      try {
+        const tokenId = BigInt(conditionId) + BigInt(idx);
+        const bal = await ctf.balanceOf(funderAddress, tokenId);
+        if (Number(bal) > 0) {
           hasTokens = true;
           break;
         }
+      } catch {
+        hasTokens = true;
+        break;
       }
-
-      if (!hasTokens) {
-        logger.info(`[Redeem] No tokens to redeem for ${conditionId.slice(0, 10)}...`);
-        return { success: true };
-      }
-
-      const tx = await adapter.redeemPositions(conditionId, indexSets);
-      await tx.wait();
-      logger.info(`[Redeem] Neg-risk redemption tx: ${tx.hash}`);
-    } else {
-      // For regular markets, call CTF contract directly
-      const ctf = new Contract(CTF_ADDRESS, CTF_ABI, signer);
-      const parentCollectionId = "0x0000000000000000000000000000000000000000000000000000000000000000";
-      const tx = await ctf.redeemPositions(COLLATERAL_ADDRESS, parentCollectionId, conditionId, indexSets);
-      await tx.wait();
-      logger.info(`[Redeem] CTF redemption tx: ${tx.hash}`);
     }
 
+    if (!hasTokens) {
+      logger.info(`[Redeem] No tokens at proxy wallet for ${conditionId.slice(0, 10)}...`);
+      return { success: true };
+    }
+
+    // Encode the redemption calldata
+    let to: string;
+    let callData: string;
+
+    if (negRisk) {
+      const iface = new Interface(NEG_RISK_ABI);
+      callData = iface.encodeFunctionData("redeemPositions", [conditionId, indexSets]);
+      to = NEG_RISK_ADAPTER;
+    } else {
+      const iface = new Interface(CTF_ABI);
+      callData = iface.encodeFunctionData("redeemPositions", [COLLATERAL_ADDRESS, ZERO_BYTES32, conditionId, indexSets]);
+      to = CTF_ADDRESS;
+    }
+
+    // Execute through the Gnosis Safe (proxy wallet)
+    const safe = new Contract(funderAddress, GNOSIS_SAFE_ABI, signer);
+    const nonce = await safe.nonce();
+
+    // Get the Safe transaction hash
+    const txHash = await safe.getTransactionHash(
+      to, 0, callData, 0, 0, 0, 0, ZERO_ADDRESS, ZERO_ADDRESS, nonce
+    );
+
+    // Sign with eth_sign and adjust v += 4 for Gnosis Safe signature type
+    const rawSig = await signer.signMessage(arrayify(txHash));
+    const sigBytes = arrayify(rawSig);
+    sigBytes[64] += 4;
+    const adjustedSig = hexlify(sigBytes);
+
+    // Execute the redemption through the Safe
+    const tx = await safe.execTransaction(
+      to, 0, callData, 0, 0, 0, 0, ZERO_ADDRESS, ZERO_ADDRESS, adjustedSig
+    );
+    await tx.wait();
+
+    logger.info(`[Redeem] Claimed via Safe tx: ${tx.hash} | conditionId=${conditionId.slice(0, 10)}...`);
     return { success: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
