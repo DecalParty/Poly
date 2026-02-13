@@ -101,8 +101,14 @@ export interface ScalpEntrySignal {
 
 /**
  * Evaluate whether there's a scalp entry opportunity.
- * Returns a signal if either UP or DOWN is undervalued by minGap.
- * Prefers the side with the larger gap.
+ *
+ * DIRECTIONAL FILTER: Only buy the side BTC supports.
+ *   BTC up   -> only consider YES (UP) being undervalued
+ *   BTC down -> only consider NO (DOWN) being undervalued
+ * This prevents buying the losing side during strong moves.
+ *
+ * VELOCITY FILTER: If BTC moved too fast recently (>0.15% in 60s),
+ * suppress entry - prices are unstable and fair value is unreliable.
  */
 export function evaluateScalpEntry(
   btcChangePercent: number,
@@ -112,38 +118,46 @@ export function evaluateScalpEntry(
   entryMin: number,
   entryMax: number,
   secondsRemaining: number = 450,
+  btcVelocity: number = 0,
 ): ScalpEntrySignal | null {
   if (isBtcFlat(btcChangePercent)) return null;
 
+  // Velocity filter: if BTC moved >0.15% in the last 60s, prices are too volatile
+  if (Math.abs(btcVelocity) > 0.0015) return null;
+
   const fair = computeFairValue(btcChangePercent, secondsRemaining);
+
+  // Directional filter: only buy the side BTC is pushing
+  // BTC up (positive change) -> only buy YES (UP shares are undervalued, not DOWN)
+  // BTC down (negative change) -> only buy NO (DOWN shares are undervalued, not UP)
+  const btcUp = btcChangePercent > 0;
+
   const upGap = fair.up - yesPrice;
   const downGap = fair.down - noPrice;
 
-  // Check UP side
-  const upValid = upGap >= minGap && yesPrice >= entryMin && yesPrice <= entryMax;
-  // Check DOWN side
-  const downValid = downGap >= minGap && noPrice >= entryMin && noPrice <= entryMax;
-
-  if (!upValid && !downValid) return null;
-
-  // Pick the side with the bigger gap
-  if (upValid && (!downValid || upGap >= downGap)) {
+  if (btcUp) {
+    // Only consider UP side
+    const upValid = upGap >= minGap && yesPrice >= entryMin && yesPrice <= entryMax;
+    if (!upValid) return null;
     return {
       side: "yes",
       fairValue: fair.up,
       actualPrice: yesPrice,
       gap: upGap,
-      reason: `UP undervalued: $${yesPrice.toFixed(2)} vs fair $${fair.up.toFixed(2)} (gap $${upGap.toFixed(2)})`,
+      reason: `UP undervalued: $${yesPrice.toFixed(2)} vs fair $${fair.up.toFixed(2)} (gap $${upGap.toFixed(2)}, vel ${(btcVelocity * 100).toFixed(3)}%)`,
+    };
+  } else {
+    // Only consider DOWN side
+    const downValid = downGap >= minGap && noPrice >= entryMin && noPrice <= entryMax;
+    if (!downValid) return null;
+    return {
+      side: "no",
+      fairValue: fair.down,
+      actualPrice: noPrice,
+      gap: downGap,
+      reason: `DOWN undervalued: $${noPrice.toFixed(2)} vs fair $${fair.down.toFixed(2)} (gap $${downGap.toFixed(2)}, vel ${(btcVelocity * 100).toFixed(3)}%)`,
     };
   }
-
-  return {
-    side: "no",
-    fairValue: fair.down,
-    actualPrice: noPrice,
-    gap: downGap,
-    reason: `DOWN undervalued: $${noPrice.toFixed(2)} vs fair $${fair.down.toFixed(2)} (gap $${downGap.toFixed(2)})`,
-  };
 }
 
 // ??? Exit Signal ?????????????????????????????????????????????????????????????

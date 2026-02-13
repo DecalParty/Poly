@@ -12,6 +12,10 @@ let windowOpenPrice = 0;
 let windowOpenTs = 0;
 let running = false;
 
+// Rolling price buffer for velocity tracking (last 3 minutes)
+const VELOCITY_BUFFER_MAX_AGE_MS = 180_000; // 3 min
+const priceBuffer: { price: number; ts: number }[] = [];
+
 const BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@miniTicker";
 
 function getWindowStart(): number {
@@ -44,6 +48,16 @@ function connect() {
       if (price > 0) {
         lastPrice = price;
         lastUpdate = Date.now();
+
+        // Record price for velocity tracking (sample every ~2s to avoid bloat)
+        const now = Date.now();
+        if (priceBuffer.length === 0 || now - priceBuffer[priceBuffer.length - 1].ts >= 2000) {
+          priceBuffer.push({ price, ts: now });
+          // Trim old entries
+          while (priceBuffer.length > 0 && now - priceBuffer[0].ts > VELOCITY_BUFFER_MAX_AGE_MS) {
+            priceBuffer.shift();
+          }
+        }
 
         // Snapshot window-open price at the start of each 15-min window
         const currentWindowStart = getWindowStart();
@@ -129,4 +143,30 @@ export function getBtcWindowChange(): number {
 /** Returns true if Binance WS is connected and data is fresh (<10s old). */
 export function isBinanceFresh(): boolean {
   return lastUpdate > 0 && Date.now() - lastUpdate < 10_000;
+}
+
+/**
+ * BTC velocity: % change over the last N seconds.
+ * Positive = price rising, negative = falling.
+ * Returns 0 if not enough data.
+ *
+ * Use to detect rapid moves - if |velocity| is high, the market
+ * is moving fast and fair values are unreliable.
+ */
+export function getBtcVelocity(lookbackMs: number = 60_000): number {
+  if (priceBuffer.length < 2) return 0;
+  const now = Date.now();
+  const cutoff = now - lookbackMs;
+
+  // Find the oldest price within the lookback window
+  let oldest: { price: number; ts: number } | null = null;
+  for (const entry of priceBuffer) {
+    if (entry.ts >= cutoff) {
+      oldest = entry;
+      break;
+    }
+  }
+
+  if (!oldest || oldest.price <= 0) return 0;
+  return (lastPrice - oldest.price) / oldest.price;
 }

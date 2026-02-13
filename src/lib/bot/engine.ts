@@ -11,7 +11,7 @@ import { insertTrade } from "../db/queries";
 import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount, getRecentTradeConditionIds } from "../db/queries";
 import { startMarketScanner, stopMarketScanner, getActiveMarkets, getActiveMarketForAsset, getRecentOutcomes, markOutcomeResolved } from "../prices/market-scanner";
 import { getClobClient, redeemWinnings, getClaimablePositions, placeLimitBuyOrder, placeLimitSellOrder, cancelOrder, getOrderStatus, placeSellOrder } from "../polymarket/client";
-import { startBinanceWs, stopBinanceWs, getBinancePrice, getWindowOpenPrice, getBtcWindowChange, isBinanceFresh, getBinanceLastUpdate } from "../prices/binance-ws";
+import { startBinanceWs, stopBinanceWs, getBinancePrice, getWindowOpenPrice, getBtcWindowChange, isBinanceFresh, getBinanceLastUpdate, getBtcVelocity } from "../prices/binance-ws";
 import { Wallet } from "@ethersproject/wallet";
 import { StaticJsonRpcProvider } from "@ethersproject/providers";
 import { Contract } from "@ethersproject/contracts";
@@ -890,10 +890,11 @@ async function tradingLoop() {
           // Don't enter too close to end
           if (market.secondsRemaining < 180) continue;
 
+          const velocity = getBtcVelocity(60_000); // 60s lookback
           const signal = evaluateScalpEntry(
             btcChange, market.yesPrice, market.noPrice,
             settings.scalpMinGap, settings.scalpEntryMin, settings.scalpEntryMax,
-            market.secondsRemaining
+            market.secondsRemaining, velocity
           );
 
           // Diagnostic log every 15s showing why we skipped or what signal we got
@@ -902,15 +903,20 @@ async function tradingLoop() {
           if (!lastDiag || now - lastDiag.time >= 15000) {
             lastLoggedDecision[diagKey] = { reason: "diag", time: now };
             const fair = computeFairValue(btcChange, market.secondsRemaining);
-            const upGap = fair.up - market.yesPrice;
-            const downGap = fair.down - market.noPrice;
+            const supportedSide = btcChange >= 0 ? "UP" : "DOWN";
+            const supportedGap = btcChange >= 0 ? fair.up - market.yesPrice : fair.down - market.noPrice;
+            const supportedPrice = btcChange >= 0 ? market.yesPrice : market.noPrice;
+            const supportedFair = btcChange >= 0 ? fair.up : fair.down;
             const flat = Math.abs(btcChange) < 0.0005;
             const timeMin = Math.floor(market.secondsRemaining / 60);
             const timeSec = market.secondsRemaining % 60;
+            const velStr = `vel ${(velocity * 100).toFixed(3)}%/min`;
             if (flat) {
               broadcastLog(`[${market.asset}] BTC flat (${(btcChange * 100).toFixed(3)}%) ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC $${getBinancePrice().toFixed(0)} | YES $${market.yesPrice.toFixed(2)} NO $${market.noPrice.toFixed(2)}`);
+            } else if (Math.abs(velocity) > 0.0015) {
+              broadcastLog(`[${market.asset}] Fast move (${velStr}) - waiting | BTC ${(btcChange * 100).toFixed(3)}% | ${supportedSide} $${supportedPrice.toFixed(2)} fair $${supportedFair.toFixed(2)}`);
             } else if (!signal) {
-              broadcastLog(`[${market.asset}] No signal ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC ${(btcChange * 100).toFixed(3)}% | Fair UP $${fair.up.toFixed(2)} DOWN $${fair.down.toFixed(2)} | Gap UP ${upGap >= 0 ? "+" : ""}${upGap.toFixed(2)} DOWN ${downGap >= 0 ? "+" : ""}${downGap.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+`);
+              broadcastLog(`[${market.asset}] No signal ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC ${(btcChange * 100).toFixed(3)}% ${velStr} | ${supportedSide} $${supportedPrice.toFixed(2)} fair $${supportedFair.toFixed(2)} gap ${supportedGap >= 0 ? "+" : ""}${supportedGap.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+`);
             }
           }
 
