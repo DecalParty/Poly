@@ -57,6 +57,18 @@ const marketInfoCache: Map<string, MarketInfo> = new Map();
 const lastResolutionAttempt: Map<string, number> = new Map();
 const RESOLUTION_RETRY_MS = 5000; // Only retry resolution every 5 seconds
 
+// Pending claims queue � retries auto-claim until on-chain condition is claimable
+interface PendingClaim {
+  conditionId: string;
+  negRisk: boolean;
+  asset: string;
+  attempts: number;
+  nextAttempt: number;
+}
+const pendingClaims: PendingClaim[] = [];
+const MAX_CLAIM_ATTEMPTS = 20; // Try for ~10 minutes (20 * 30s)
+const CLAIM_RETRY_INTERVAL_MS = 30_000; // 30 seconds between retries
+
 // Circuit breaker
 let circuitBreakerTriggered = false;
 let circuitBreakerReason: string | null = null;
@@ -728,21 +740,16 @@ async function tradingLoop() {
       broadcastLog(`${pos.asset} resolved ${resolvedSide === "yes" ? "UP" : "DOWN"} - ${won ? "WON" : "LOST"} | P&L: $${trade.pnl?.toFixed(4)}`);
       addAlert(won ? "success" : "warning", `${pos.asset} resolved ${resolvedSide === "yes" ? "UP" : "DOWN"}: ${won ? "WON" : "LOST"} ($${trade.pnl?.toFixed(4)})`, pos.asset);
 
-      // Auto-claim winnings on-chain (non-blocking)
+      // Queue auto-claim (Polymarket has a delay before on-chain claim is available)
       if (!settings.paperTrading && won) {
-        redeemWinnings(cachedMarket.conditionId, cachedMarket.negRisk)
-          .then((res) => {
-            if (res.success) {
-              broadcastLog(`${pos.asset} winnings claimed on-chain`);
-              addAlert("success", `Claimed winnings for ${pos.asset}`, pos.asset);
-            } else {
-              broadcastLog(`${pos.asset} claim failed: ${res.error}`);
-              addAlert("warning", `Auto-claim failed for ${pos.asset}: ${res.error}`, pos.asset);
-            }
-          })
-          .catch((err) => {
-            logger.error(`[Redeem] Auto-claim error for ${pos.asset}: ${err}`);
-          });
+        pendingClaims.push({
+          conditionId: cachedMarket.conditionId,
+          negRisk: cachedMarket.negRisk,
+          asset: pos.asset,
+          attempts: 0,
+          nextAttempt: Date.now() + 5000, // First attempt after 5 seconds
+        });
+        broadcastLog(`${pos.asset} queued for auto-claim (will retry until on-chain is ready)`);
       }
     }
 
@@ -752,6 +759,39 @@ async function tradingLoop() {
       if (am) {
         pos.currentPrice = pos.side === "yes" ? am.yesPrice : am.noPrice;
         pos.unrealizedPnl = pos.shares * pos.currentPrice - pos.costBasis;
+      }
+    }
+
+    // ---- Process pending claims (retry until on-chain is ready) ----
+    const now = Date.now();
+    for (let i = pendingClaims.length - 1; i >= 0; i--) {
+      const claim = pendingClaims[i];
+      if (now < claim.nextAttempt) continue;
+
+      claim.attempts++;
+      try {
+        const res = await redeemWinnings(claim.conditionId, claim.negRisk);
+        if (res.success) {
+          broadcastLog(`${claim.asset} winnings claimed on-chain (attempt ${claim.attempts})`);
+          addAlert("success", `Claimed winnings for ${claim.asset}`, claim.asset as MarketAsset);
+          pendingClaims.splice(i, 1);
+        } else {
+          logger.info(`[Redeem] ${claim.asset} attempt ${claim.attempts}/${MAX_CLAIM_ATTEMPTS}: ${res.error}`);
+          if (claim.attempts >= MAX_CLAIM_ATTEMPTS) {
+            broadcastLog(`${claim.asset} auto-claim gave up after ${claim.attempts} attempts: ${res.error}`);
+            addAlert("warning", `Auto-claim failed for ${claim.asset} � claim manually on polymarket.com`, claim.asset as MarketAsset);
+            pendingClaims.splice(i, 1);
+          } else {
+            claim.nextAttempt = now + CLAIM_RETRY_INTERVAL_MS;
+          }
+        }
+      } catch (err) {
+        logger.error(`[Redeem] ${claim.asset} attempt ${claim.attempts} error: ${err}`);
+        if (claim.attempts >= MAX_CLAIM_ATTEMPTS) {
+          pendingClaims.splice(i, 1);
+        } else {
+          claim.nextAttempt = now + CLAIM_RETRY_INTERVAL_MS;
+        }
       }
     }
   } catch (err) {
