@@ -11,7 +11,7 @@ import { insertTrade } from "../db/queries";
 import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount, getRecentTradeConditionIds } from "../db/queries";
 import { startMarketScanner, stopMarketScanner, getActiveMarkets, getActiveMarketForAsset, getRecentOutcomes, markOutcomeResolved } from "../prices/market-scanner";
 import { getClobClient, redeemWinnings, getClaimablePositions, placeLimitBuyOrder, placeLimitSellOrder, cancelOrder, getOrderStatus, placeSellOrder } from "../polymarket/client";
-import { startBinanceWs, stopBinanceWs, getBinancePrice, getWindowOpenPrice, getBtcWindowChange, isBinanceFresh, getBinanceLastUpdate, getBtcVelocity, getBtcDelta } from "../prices/binance-ws";
+import { startBinanceWs, stopBinanceWs, getBinancePrice, getWindowOpenPrice, getBtcWindowChange, isBinanceFresh, getBinanceLastUpdate, getBtcVelocity, getBtcDelta, getBtcTrend } from "../prices/binance-ws";
 import { Wallet } from "@ethersproject/wallet";
 import { StaticJsonRpcProvider } from "@ethersproject/providers";
 import { Contract } from "@ethersproject/contracts";
@@ -190,7 +190,14 @@ function ensurePriceBroadcast() {
     if (outcomesChanged) lastOutcomesJson = outcomesJson;
 
     const btcChange = getBtcWindowChange();
-    const fair = computeFairValue(btcChange);
+    // Compute fair value for dashboard using first active BTC market's prices
+    const btcMarket = Object.values(activeMarketsRecord).find(m => m.asset === "BTC");
+    const dashYes = btcMarket?.yesPrice ?? 0.50;
+    const dashNo = btcMarket?.noPrice ?? 0.50;
+    const dashDelta = getBtcDelta(15_000);
+    const dashTrend = getBtcTrend(30 * 60_000);
+    const dashSecsRemaining = btcMarket?.secondsRemaining ?? 450;
+    const fair = computeFairValue(dashYes, dashNo, dashDelta, getBinancePrice(), dashTrend.direction, dashTrend.strength, dashSecsRemaining);
 
     broadcast({
       type: "price",
@@ -443,10 +450,14 @@ export function getState(): BotState {
   }
 
   const btcChange = getBtcWindowChange();
-  // Use first active market's secondsRemaining for dashboard fair value display
   const statusActiveMarkets = getActiveMarkets();
   const displaySecsRemaining = statusActiveMarkets.length > 0 ? statusActiveMarkets[0].secondsRemaining : 450;
-  const fair = computeFairValue(btcChange, displaySecsRemaining, getBtcVelocity(60_000));
+  const statusBtcMarket = statusActiveMarkets.find(m => m.asset === "BTC");
+  const sYes = statusBtcMarket?.yesPrice ?? 0.50;
+  const sNo = statusBtcMarket?.noPrice ?? 0.50;
+  const sDelta = getBtcDelta(15_000);
+  const sTrend = getBtcTrend(30 * 60_000);
+  const fair = computeFairValue(sYes, sNo, sDelta, getBinancePrice(), sTrend.direction, sTrend.strength, displaySecsRemaining);
 
   return {
     status: botStatus,
@@ -889,11 +900,15 @@ async function tradingLoop() {
           // Don't enter too close to end
           if (market.secondsRemaining < 180) continue;
 
-          const delta = getBtcDelta(5000); // $ change in last 5 seconds
+          const btcDelta = getBtcDelta(15_000); // $ change in last 15 seconds
+          const btcPrice = getBinancePrice();
+          const trend = getBtcTrend(30 * 60_000); // 30 min trend
           const signal = evaluateScalpEntry(
-            delta, market.yesPrice, market.noPrice,
+            market.yesPrice, market.noPrice,
+            btcDelta, btcPrice,
+            trend.direction, trend.strength,
+            market.secondsRemaining,
             settings.scalpMinGap, settings.scalpEntryMin, settings.scalpEntryMax,
-            market.secondsRemaining, 0
           );
 
           // Diagnostic log every 15s
@@ -903,8 +918,10 @@ async function tradingLoop() {
             lastLoggedDecision[diagKey] = { reason: "diag", time: now };
             const timeMin = Math.floor(market.secondsRemaining / 60);
             const timeSec = market.secondsRemaining % 60;
-            const deltaStr = delta >= 0 ? `+$${delta.toFixed(0)}` : `-$${Math.abs(delta).toFixed(0)}`;
-            broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC $${getBinancePrice().toFixed(0)} (${deltaStr}/5s) | UP $${market.yesPrice.toFixed(2)} DOWN $${market.noPrice.toFixed(2)} | Spike threshold: $${settings.scalpMinGap.toFixed(0)}`);
+            const deltaStr = btcDelta >= 0 ? `+$${btcDelta.toFixed(0)}` : `-$${Math.abs(btcDelta).toFixed(0)}`;
+            const trendStr = trend.direction > 0 ? "UP" : trend.direction < 0 ? "DN" : "--";
+            const fair = computeFairValue(market.yesPrice, market.noPrice, btcDelta, btcPrice, trend.direction, trend.strength, market.secondsRemaining);
+            broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC $${btcPrice.toFixed(0)} (${deltaStr}/15s) trend${trendStr}${(trend.strength * 100).toFixed(0)}% | UP $${market.yesPrice.toFixed(2)} fair $${fair.up.toFixed(2)} | DOWN $${market.noPrice.toFixed(2)} fair $${fair.down.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+`);
           }
 
           if (signal) {

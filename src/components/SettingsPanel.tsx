@@ -46,14 +46,14 @@ export default function SettingsPanel({ settings, botStatus, onSave, circuitBrea
     </Sec>
     <Sec title="Scalp Strategy" open={openSections.scalp} onToggle={() => toggleSection("scalp")} badge={f.scalpEnabled !== false ? { text: "ACTIVE", color: "text-emerald-400 bg-emerald-400/10" } : { text: "OFF", color: "text-gray-500 bg-white/[0.04]" }}>
       <div className="flex items-center justify-between mb-4 p-3 rounded-xl bg-white/[0.02] border border-white/[0.04]">
-        <div><span className="text-[12px] font-medium text-gray-300">Spike Scalper</span><p className="text-[10px] text-gray-500 mt-0.5">Buy when Bitbo BTC moves before Polymarket catches up</p></div>
+        <div><span className="text-[12px] font-medium text-gray-300">Bitbo Edge Scalper</span><p className="text-[10px] text-gray-500 mt-0.5">Uses Bitbo's 1-2s price lead to buy undervalued sides</p></div>
         <Tog value={f.scalpEnabled !== false} onChange={(v: boolean) => handleBoolChange("scalpEnabled" as any, v)} disabled={disabled} />
       </div>
       {f.scalpEnabled !== false && <div className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
           <NF label="Trade Size" value={f.scalpTradeSize ?? 12} field="scalpTradeSize" onChange={handleNumChange} disabled={disabled} prefix="$" step="1" />
           <NF label="Max Positions" value={f.scalpMaxPositions ?? 2} field="scalpMaxPositions" onChange={handleNumChange} disabled={disabled} step="1" />
-          <NF label="Spike Threshold" value={f.scalpMinGap ?? 75} field="scalpMinGap" onChange={handleNumChange} disabled={disabled} prefix="$" step="5" />
+          <NF label="Min Gap" value={f.scalpMinGap ?? 0.03} field="scalpMinGap" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
           <NF label="Profit Target" value={f.scalpProfitTarget ?? 0.03} field="scalpProfitTarget" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
           <NF label="Entry Min" value={f.scalpEntryMin ?? 0.15} field="scalpEntryMin" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
           <NF label="Entry Max" value={f.scalpEntryMax ?? 0.85} field="scalpEntryMax" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
@@ -62,7 +62,7 @@ export default function SettingsPanel({ settings, botStatus, onSave, circuitBrea
         </div>
         <div className="rounded-xl bg-white/[0.015] border border-white/[0.04] p-3">
           <p className="text-[10px] text-gray-500 font-semibold mb-1">How it works</p>
-          <p className="text-[10px] text-gray-600 leading-relaxed">Watches Bitbo BTC price (leads Polymarket by 1-2s). When BTC moves &gt;${(f.scalpMinGap ?? 75).toFixed(0)} in 5 seconds, buys the side that benefits before Polymarket catches up. Sells at entry + ${(f.scalpProfitTarget ?? 0.03).toFixed(2)}. Stop loss at 2x profit target. Time exit 2 min before resolution.</p>
+          <p className="text-[10px] text-gray-600 leading-relaxed">Uses Bitbo BTC price (leads Polymarket by 1-2s) + 30min trend to calculate fair values. When a side is {((f.scalpMinGap ?? 0.03) * 100).toFixed(0)}+ cents below fair value, buys it. Sells at entry + ${(f.scalpProfitTarget ?? 0.03).toFixed(2)}. Stop loss at 2x target. Time exit {f.scalpExitWindow ?? 120}s before resolution.</p>
         </div>
       </div>}
     </Sec>

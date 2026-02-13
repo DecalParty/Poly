@@ -1,68 +1,85 @@
 /**
- * Scalp Strategy -- Delta-Based Spike Trading
+ * Scalp Strategy -- Market-Anchored Fair Value
  *
- * Bitbo's BTC price leads Polymarket by 1-2 seconds.
- * When BTC moves significantly on Bitbo, Polymarket's order book
- * hasn't adjusted yet. Buy the side that benefits before it catches up.
+ * The ultimate edge: Bitbo's BTC price leads Polymarket by 1-2 seconds.
+ * Instead of computing fair value from scratch (broken: window-open mismatch)
+ * or racing a spike (too slow), we:
  *
- * No fair value table. No window-open price. Just:
- * 1. Detect BTC move on Bitbo (> $SPIKE_THRESHOLD in last few seconds)
- * 2. BTC went up -> buy UP (YES) at current Polymarket price
- * 3. BTC went down -> buy DOWN (NO) at current Polymarket price
- * 4. Sell when Polymarket catches up (entry + profit target)
+ * 1. ANCHOR on Polymarket's current prices (they reflect Chainlink reality)
+ * 2. DETECT unreflected BTC moves via Bitbo (last 10-30s delta)
+ * 3. WEIGHT by BTC trend (30min-1hr momentum confirms or weakens the signal)
+ * 4. WEIGHT by time remaining (later = more confident in direction)
+ * 5. CALCULATE the expected price adjustment Polymarket will make
+ * 6. BUY the undervalued side before it adjusts
+ *
+ * Key insight: we don't need the window-open price. We just need to know
+ * that BTC moved $X on Bitbo and Polymarket hasn't adjusted yet.
  */
 
-// -- Fair Value (kept for dashboard display only) -----------------------------
-const FAIR_VALUE_TABLE = [
-  { change: 0.0000, value: 0.500 },
-  { change: 0.0003, value: 0.505 },
-  { change: 0.0005, value: 0.510 },
-  { change: 0.0010, value: 0.530 },
-  { change: 0.0015, value: 0.550 },
-  { change: 0.0020, value: 0.575 },
-  { change: 0.0025, value: 0.600 },
-  { change: 0.0030, value: 0.640 },
-  { change: 0.0040, value: 0.710 },
-  { change: 0.0050, value: 0.780 },
-  { change: 0.0075, value: 0.870 },
-  { change: 0.0100, value: 0.930 },
-  { change: 0.0150, value: 0.970 },
-];
+// -- Sensitivity: how much does Polymarket move per BTC % change? -------------
+// Based on observed fair value table: 0.1% BTC move ? 3 cent Polymarket shift.
+// This translates BTC dollar moves into expected Polymarket cents.
+const CENTS_PER_BTC_PERCENT = 30; // 0.1% BTC -> 3 cents -> 30 cents per 1%
 
-function interpolate(absChange: number): number {
-  const table = FAIR_VALUE_TABLE;
-  if (absChange <= table[0].change) return table[0].value;
-  if (absChange >= table[table.length - 1].change) return table[table.length - 1].value;
-  for (let i = 1; i < table.length; i++) {
-    if (absChange <= table[i].change) {
-      const prev = table[i - 1];
-      const curr = table[i];
-      const t = (absChange - prev.change) / (curr.change - prev.change);
-      return prev.value + t * (curr.value - prev.value);
+/**
+ * Compute market-anchored fair values for UP and DOWN.
+ *
+ * Takes the CURRENT Polymarket prices as the baseline (market consensus)
+ * and adjusts by the unreflected Bitbo move, weighted by trend and time.
+ *
+ * @param yesPrice - current Polymarket UP price
+ * @param noPrice  - current Polymarket DOWN price
+ * @param btcDelta - BTC $ change in last 10-30 seconds (unreflected move)
+ * @param btcPrice - current BTC price from Bitbo
+ * @param trendDirection - 1 (up), -1 (down), 0 (flat) over last 30min-1hr
+ * @param trendStrength - 0 to 1, how consistent the trend is
+ * @param secondsRemaining - seconds left in the 15-min window
+ */
+export function computeFairValue(
+  yesPrice: number,
+  noPrice: number,
+  btcDelta: number,
+  btcPrice: number,
+  trendDirection: number,
+  trendStrength: number,
+  secondsRemaining: number,
+): { up: number; down: number } {
+  if (btcPrice <= 0) return { up: yesPrice, down: noPrice };
+
+  // 1. Convert BTC $ move to expected Polymarket % adjustment
+  const btcPctMove = btcDelta / btcPrice; // e.g. $70 / $69000 = 0.001 (0.1%)
+  const rawAdjustment = btcPctMove * CENTS_PER_BTC_PERCENT; // e.g. 0.001 * 30 = 0.03 (3 cents)
+
+  // 2. Trend multiplier: if 30min trend confirms the recent move, boost confidence.
+  //    If trend opposes, reduce. Neutral trend = 1x.
+  //    trendDirection matches btcDelta direction -> boost (up to 1.5x)
+  //    trendDirection opposes -> reduce (down to 0.5x)
+  let trendMultiplier = 1.0;
+  const deltaDirection = btcDelta > 0 ? 1 : btcDelta < 0 ? -1 : 0;
+  if (deltaDirection !== 0 && trendDirection !== 0) {
+    if (deltaDirection === trendDirection) {
+      trendMultiplier = 1.0 + 0.5 * trendStrength; // max 1.5x
+    } else {
+      trendMultiplier = 1.0 - 0.5 * trendStrength; // min 0.5x
     }
   }
-  return table[table.length - 1].value;
-}
 
-/** Dashboard display only -- not used for trading decisions. */
-export function computeFairValue(
-  btcChangePercent: number,
-  secondsRemaining: number = 0,
-  btcVelocity: number = 0,
-): { up: number; down: number } {
-  const absChange = Math.abs(btcChangePercent);
-  const rawFair = interpolate(absChange);
+  // 3. Time factor: later in the window = BTC has less time to reverse.
+  //    Early in window, current direction might flip, so reduce confidence.
   const elapsed = Math.max(0, 900 - secondsRemaining);
   const timeFactor = Math.sqrt(Math.min(1, elapsed / 900));
-  const winningFair = 0.50 + (rawFair - 0.50) * timeFactor;
-  if (btcChangePercent >= 0) {
-    return { up: winningFair, down: 1 - winningFair };
-  } else {
-    return { up: 1 - winningFair, down: winningFair };
-  }
+
+  // 4. Final adjustment
+  const adjustment = rawAdjustment * trendMultiplier * timeFactor;
+
+  // 5. Apply: BTC went up -> UP should be higher, DOWN should be lower
+  const fairUp = Math.max(0.01, Math.min(0.99, yesPrice + adjustment));
+  const fairDown = Math.max(0.01, Math.min(0.99, noPrice - adjustment));
+
+  return { up: fairUp, down: fairDown };
 }
 
-// -- Spike Entry Signal -------------------------------------------------------
+// -- Entry Signal -------------------------------------------------------------
 
 export interface ScalpEntrySignal {
   side: "yes" | "no";
@@ -73,56 +90,66 @@ export interface ScalpEntrySignal {
 }
 
 /**
- * Evaluate whether there's a spike entry opportunity.
- *
- * @param btcDelta - BTC dollar change in the last few seconds (from Bitbo)
- * @param yesPrice - current Polymarket UP price
- * @param noPrice  - current Polymarket DOWN price
- * @param spikeThreshold - minimum $ move to trigger (e.g. 75)
- * @param entryMin - don't buy below this price (too extreme)
- * @param entryMax - don't buy above this price (no room for profit)
- *
- * Logic: if BTC moved >$spikeThreshold, buy the side that benefits.
- * BTC up -> buy YES (UP will increase once Polymarket catches up)
- * BTC down -> buy NO (DOWN will increase once Polymarket catches up)
+ * Evaluate whether there's an entry opportunity based on market-anchored
+ * fair value. If Bitbo shows BTC moved and Polymarket hasn't caught up,
+ * the gap between fair and actual price is our edge.
  */
 export function evaluateScalpEntry(
-  btcDelta: number,
   yesPrice: number,
   noPrice: number,
-  spikeThreshold: number,
+  btcDelta: number,
+  btcPrice: number,
+  trendDirection: number,
+  trendStrength: number,
+  secondsRemaining: number,
+  minGap: number,
   entryMin: number,
   entryMax: number,
-  secondsRemaining: number = 450,
-  btcVelocity: number = 0,
 ): ScalpEntrySignal | null {
-  // Need a significant move
-  if (Math.abs(btcDelta) < spikeThreshold) return null;
-
   // Don't enter too close to window end
   if (secondsRemaining < 180) return null;
 
-  if (btcDelta > 0) {
-    // BTC went UP -> buy YES (UP shares will increase)
-    if (yesPrice < entryMin || yesPrice > entryMax) return null;
+  // Need some BTC movement to have a signal
+  if (btcPrice <= 0 || Math.abs(btcDelta) < 5) return null;
+
+  const fair = computeFairValue(
+    yesPrice, noPrice, btcDelta, btcPrice,
+    trendDirection, trendStrength, secondsRemaining
+  );
+
+  const upGap = fair.up - yesPrice;   // positive = UP is undervalued
+  const downGap = fair.down - noPrice; // positive = DOWN is undervalued (btcDelta < 0)
+
+  // Check both sides
+  const upValid = upGap >= minGap && yesPrice >= entryMin && yesPrice <= entryMax;
+  const downValid = downGap >= minGap && noPrice >= entryMin && noPrice <= entryMax;
+
+  if (!upValid && !downValid) return null;
+
+  // Pick the side with the bigger gap
+  if (upValid && (!downValid || upGap >= downGap)) {
+    const trendStr = trendDirection > 0 ? "UP" : trendDirection < 0 ? "DN" : "--";
     return {
       side: "yes",
-      fairValue: yesPrice + 0.05, // estimate: price should go up
+      fairValue: fair.up,
       actualPrice: yesPrice,
-      gap: btcDelta,
-      reason: `BTC +$${btcDelta.toFixed(0)} spike -> buy UP @ $${yesPrice.toFixed(2)}`,
-    };
-  } else {
-    // BTC went DOWN -> buy NO (DOWN shares will increase)
-    if (noPrice < entryMin || noPrice > entryMax) return null;
-    return {
-      side: "no",
-      fairValue: noPrice + 0.05,
-      actualPrice: noPrice,
-      gap: Math.abs(btcDelta),
-      reason: `BTC -$${Math.abs(btcDelta).toFixed(0)} spike -> buy DOWN @ $${noPrice.toFixed(2)}`,
+      gap: upGap,
+      reason: `UP: $${yesPrice.toFixed(2)} -> fair $${fair.up.toFixed(2)} (gap +${upGap.toFixed(2)}) | BTC +$${btcDelta.toFixed(0)} trend${trendStr}${(trendStrength * 100).toFixed(0)}%`,
     };
   }
+
+  if (downValid) {
+    const trendStr = trendDirection > 0 ? "UP" : trendDirection < 0 ? "DN" : "--";
+    return {
+      side: "no",
+      fairValue: fair.down,
+      actualPrice: noPrice,
+      gap: downGap,
+      reason: `DOWN: $${noPrice.toFixed(2)} -> fair $${fair.down.toFixed(2)} (gap +${downGap.toFixed(2)}) | BTC -$${Math.abs(btcDelta).toFixed(0)} trend${trendStr}${(trendStrength * 100).toFixed(0)}%`,
+    };
+  }
+
+  return null;
 }
 
 // ??? Exit Signal ?????????????????????????????????????????????????????????????

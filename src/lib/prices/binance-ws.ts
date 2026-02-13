@@ -14,9 +14,14 @@ let windowOpenPrice = 0;
 let windowOpenTs = 0;
 let running = false;
 
-// Rolling price buffer for spike detection (last 30 seconds, sampled every 500ms)
-const SPIKE_BUFFER_MAX_AGE_MS = 30_000;
-const priceBuffer: { price: number; ts: number }[] = [];
+// Rolling price buffers:
+// - Fast buffer: last 60s, sampled every 500ms (for recent delta / unreflected moves)
+// - Trend buffer: last 90 minutes, sampled every 10s (for 30min/1hr trend)
+const FAST_BUFFER_MAX_AGE_MS = 60_000;
+const fastBuffer: { price: number; ts: number }[] = [];
+
+const TREND_BUFFER_MAX_AGE_MS = 90 * 60_000; // 90 min
+const trendBuffer: { price: number; ts: number }[] = [];
 
 const BITBO_WS_URL = "wss://api.bitbo.io";
 
@@ -29,13 +34,20 @@ function handlePrice(price: number) {
   lastPrice = price;
   lastUpdate = Date.now();
 
-  // Record price for spike detection (sample every ~500ms for fast delta tracking)
+  // Fast buffer: sample every 500ms for recent delta
   const now = Date.now();
-  if (priceBuffer.length === 0 || now - priceBuffer[priceBuffer.length - 1].ts >= 500) {
-    priceBuffer.push({ price, ts: now });
-    // Trim old entries
-    while (priceBuffer.length > 0 && now - priceBuffer[0].ts > SPIKE_BUFFER_MAX_AGE_MS) {
-      priceBuffer.shift();
+  if (fastBuffer.length === 0 || now - fastBuffer[fastBuffer.length - 1].ts >= 500) {
+    fastBuffer.push({ price, ts: now });
+    while (fastBuffer.length > 0 && now - fastBuffer[0].ts > FAST_BUFFER_MAX_AGE_MS) {
+      fastBuffer.shift();
+    }
+  }
+
+  // Trend buffer: sample every 10s for longer-term trend
+  if (trendBuffer.length === 0 || now - trendBuffer[trendBuffer.length - 1].ts >= 10_000) {
+    trendBuffer.push({ price, ts: now });
+    while (trendBuffer.length > 0 && now - trendBuffer[0].ts > TREND_BUFFER_MAX_AGE_MS) {
+      trendBuffer.shift();
     }
   }
 
@@ -155,21 +167,15 @@ export function isBinanceFresh(): boolean {
 }
 
 /**
- * BTC dollar change over the last N milliseconds.
- * Positive = price rising, negative = falling.
- * Returns 0 if not enough data.
- *
- * Used for spike detection: if BTC moved >$X in last 3-5 seconds,
- * Polymarket hasn't caught up yet -> buy opportunity.
+ * BTC dollar change over the last N milliseconds (from fast buffer).
+ * Used for detecting recent moves Polymarket hasn't priced in yet.
  */
-export function getBtcDelta(lookbackMs: number = 5000): number {
-  if (priceBuffer.length < 2) return 0;
-  const now = Date.now();
-  const cutoff = now - lookbackMs;
+export function getBtcDelta(lookbackMs: number = 10_000): number {
+  if (fastBuffer.length < 2) return 0;
+  const cutoff = Date.now() - lookbackMs;
 
-  // Find the oldest price within the lookback window
   let oldest: { price: number; ts: number } | null = null;
-  for (const entry of priceBuffer) {
+  for (const entry of fastBuffer) {
     if (entry.ts >= cutoff) {
       oldest = entry;
       break;
@@ -178,6 +184,53 @@ export function getBtcDelta(lookbackMs: number = 5000): number {
 
   if (!oldest || oldest.price <= 0) return 0;
   return lastPrice - oldest.price;
+}
+
+/**
+ * BTC trend over longer periods (from trend buffer).
+ * Returns { delta: dollar change, pctChange: % change, direction: 1|-1|0, strength: 0-1 }
+ *
+ * Strength measures consistency: if price moved in one direction the whole time,
+ * strength ? 1. If it bounced around and ended flat, strength ? 0.
+ */
+export function getBtcTrend(lookbackMs: number = 30 * 60_000): {
+  delta: number;
+  pctChange: number;
+  direction: number;
+  strength: number;
+} {
+  const noTrend = { delta: 0, pctChange: 0, direction: 0, strength: 0 };
+  if (trendBuffer.length < 3) return noTrend;
+
+  const cutoff = Date.now() - lookbackMs;
+  let oldest: { price: number; ts: number } | null = null;
+  for (const entry of trendBuffer) {
+    if (entry.ts >= cutoff) {
+      oldest = entry;
+      break;
+    }
+  }
+  if (!oldest || oldest.price <= 0) return noTrend;
+
+  const delta = lastPrice - oldest.price;
+  const pctChange = delta / oldest.price;
+  const direction = delta > 0 ? 1 : delta < 0 ? -1 : 0;
+
+  // Strength: measure how consistently price moved in the final direction.
+  // Count how many trend samples are "on the right side" of the midpoint.
+  const midPrice = (oldest.price + lastPrice) / 2;
+  let onSide = 0;
+  let total = 0;
+  for (const entry of trendBuffer) {
+    if (entry.ts < cutoff) continue;
+    total++;
+    if (direction > 0 && entry.price >= midPrice) onSide++;
+    else if (direction < 0 && entry.price <= midPrice) onSide++;
+    else if (direction === 0) onSide++;
+  }
+  const strength = total > 0 ? onSide / total : 0;
+
+  return { delta, pctChange, direction, strength };
 }
 
 /** Kept for backward compat - returns % change. */
