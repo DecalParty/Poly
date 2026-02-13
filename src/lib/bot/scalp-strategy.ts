@@ -2,38 +2,33 @@
  * Scalp Strategy -- Market-Anchored Fair Value
  *
  * The ultimate edge: Bitbo's BTC price leads Polymarket by 1-2 seconds.
- * Instead of computing fair value from scratch (broken: window-open mismatch)
- * or racing a spike (too slow), we:
  *
- * 1. ANCHOR on Polymarket's current prices (they reflect Chainlink reality)
- * 2. DETECT unreflected BTC moves via Bitbo (last 10-30s delta)
- * 3. WEIGHT by BTC trend (30min-1hr momentum confirms or weakens the signal)
- * 4. WEIGHT by time remaining (later = more confident in direction)
- * 5. CALCULATE the expected price adjustment Polymarket will make
- * 6. BUY the undervalued side before it adjusts
+ * 1. ANCHOR on Polymarket's current prices (market consensus)
+ * 2. DETECT the unreflected BTC move (last 3s delta  the part Polymarket
+ *    hasn't caught up to yet)
+ * 3. CALCULATE expected Polymarket adjustment from that unreflected move
+ * 4. WEIGHT by 30min BTC trend (confirms or weakens the signal)
+ * 5. BUY the undervalued side before Polymarket adjusts
  *
- * Key insight: we don't need the window-open price. We just need to know
- * that BTC moved $X on Bitbo and Polymarket hasn't adjusted yet.
+ * No time dampening  we're not predicting end-of-window, we're predicting
+ * the next 1-2 seconds of price movement. Bitbo LEADS, Polymarket FOLLOWS.
  */
 
 // -- Sensitivity: how much does Polymarket move per BTC % change? -------------
-// Based on observed fair value table: 0.1% BTC move ? 3 cent Polymarket shift.
-// This translates BTC dollar moves into expected Polymarket cents.
-const CENTS_PER_BTC_PERCENT = 30; // 0.1% BTC -> 3 cents -> 30 cents per 1%
+// Observed: a 0.1% BTC move ($69) shifts Polymarket prices by ~4-6 cents.
+// That's 40-60 cents per 1%. Using 50 as the middle estimate.
+const CENTS_PER_BTC_PERCENT = 50;
 
 /**
  * Compute market-anchored fair values for UP and DOWN.
  *
- * Takes the CURRENT Polymarket prices as the baseline (market consensus)
- * and adjusts by the unreflected Bitbo move, weighted by trend and time.
- *
  * @param yesPrice - current Polymarket UP price
  * @param noPrice  - current Polymarket DOWN price
- * @param btcDelta - BTC $ change in last 10-30 seconds (unreflected move)
+ * @param btcDelta - BTC $ change in last ~3 seconds (unreflected move)
  * @param btcPrice - current BTC price from Bitbo
- * @param trendDirection - 1 (up), -1 (down), 0 (flat) over last 30min-1hr
+ * @param trendDirection - 1 (up), -1 (down), 0 (flat) over last 30min
  * @param trendStrength - 0 to 1, how consistent the trend is
- * @param secondsRemaining - seconds left in the 15-min window
+ * @param secondsRemaining - seconds left in 15-min window (used for entry guard only)
  */
 export function computeFairValue(
   yesPrice: number,
@@ -46,14 +41,11 @@ export function computeFairValue(
 ): { up: number; down: number } {
   if (btcPrice <= 0) return { up: yesPrice, down: noPrice };
 
-  // 1. Convert BTC $ move to expected Polymarket % adjustment
-  const btcPctMove = btcDelta / btcPrice; // e.g. $70 / $69000 = 0.001 (0.1%)
-  const rawAdjustment = btcPctMove * CENTS_PER_BTC_PERCENT; // e.g. 0.001 * 30 = 0.03 (3 cents)
+  // 1. Convert BTC $ move to expected Polymarket adjustment
+  const btcPctMove = btcDelta / btcPrice;
+  const rawAdjustment = btcPctMove * CENTS_PER_BTC_PERCENT;
 
-  // 2. Trend multiplier: if 30min trend confirms the recent move, boost confidence.
-  //    If trend opposes, reduce. Neutral trend = 1x.
-  //    trendDirection matches btcDelta direction -> boost (up to 1.5x)
-  //    trendDirection opposes -> reduce (down to 0.5x)
+  // 2. Trend multiplier: trend confirms recent move -> boost, opposes -> reduce
   let trendMultiplier = 1.0;
   const deltaDirection = btcDelta > 0 ? 1 : btcDelta < 0 ? -1 : 0;
   if (deltaDirection !== 0 && trendDirection !== 0) {
@@ -64,15 +56,11 @@ export function computeFairValue(
     }
   }
 
-  // 3. Time factor: later in the window = BTC has less time to reverse.
-  //    Early in window, current direction might flip, so reduce confidence.
-  const elapsed = Math.max(0, 900 - secondsRemaining);
-  const timeFactor = Math.sqrt(Math.min(1, elapsed / 900));
+  // 3. No time dampening  we're predicting the NEXT 1-2 second price
+  //    adjustment, not the end-of-window outcome. Bitbo leads, Polymarket follows.
+  const adjustment = rawAdjustment * trendMultiplier;
 
-  // 4. Final adjustment
-  const adjustment = rawAdjustment * trendMultiplier * timeFactor;
-
-  // 5. Apply: BTC went up -> UP should be higher, DOWN should be lower
+  // 4. Apply: BTC went up -> UP should be higher, DOWN should be lower
   const fairUp = Math.max(0.01, Math.min(0.99, yesPrice + adjustment));
   const fairDown = Math.max(0.01, Math.min(0.99, noPrice - adjustment));
 
