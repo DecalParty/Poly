@@ -1,8 +1,10 @@
 import WebSocket from "ws";
 import { logger } from "../logger";
 
-// ??? Binance BTC Real-time Price Feed ????????????????????????????????????????
-// Connects to Binance BTCUSDT mini ticker stream for sub-second price updates.
+// -- Coinbase BTC-USD Real-time Price Feed ------------------------------------
+// Connects to Coinbase WebSocket for BTC-USD ticker updates.
+// Coinbase is a primary Chainlink oracle source, which is what resolves
+// Polymarket BTC windows. This feed leads Polymarket by ~1-2 seconds.
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -16,10 +18,34 @@ let running = false;
 const VELOCITY_BUFFER_MAX_AGE_MS = 180_000; // 3 min
 const priceBuffer: { price: number; ts: number }[] = [];
 
-const BINANCE_WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@miniTicker";
+const COINBASE_WS_URL = "wss://ws-feed.exchange.coinbase.com";
 
 function getWindowStart(): number {
   return Math.floor(Date.now() / 1000 / 900) * 900;
+}
+
+function handlePrice(price: number) {
+  if (price <= 0) return;
+  lastPrice = price;
+  lastUpdate = Date.now();
+
+  // Record price for velocity tracking (sample every ~2s to avoid bloat)
+  const now = Date.now();
+  if (priceBuffer.length === 0 || now - priceBuffer[priceBuffer.length - 1].ts >= 2000) {
+    priceBuffer.push({ price, ts: now });
+    // Trim old entries
+    while (priceBuffer.length > 0 && now - priceBuffer[0].ts > VELOCITY_BUFFER_MAX_AGE_MS) {
+      priceBuffer.shift();
+    }
+  }
+
+  // Snapshot window-open price at the start of each 15-min window
+  const currentWindowStart = getWindowStart();
+  if (currentWindowStart !== windowOpenTs) {
+    windowOpenPrice = price;
+    windowOpenTs = currentWindowStart;
+    logger.info(`[CoinbaseWS] New window ${currentWindowStart}: open price $${price.toFixed(2)}`);
+  }
 }
 
 function connect() {
@@ -29,43 +55,33 @@ function connect() {
   }
 
   try {
-    ws = new WebSocket(BINANCE_WS_URL);
+    ws = new WebSocket(COINBASE_WS_URL);
   } catch (err) {
-    logger.error(`[BinanceWS] Failed to create WebSocket: ${err}`);
+    logger.error(`[CoinbaseWS] Failed to create WebSocket: ${err}`);
     scheduleReconnect();
     return;
   }
 
   ws.on("open", () => {
-    logger.info("[BinanceWS] Connected to Binance BTCUSDT stream");
+    logger.info("[CoinbaseWS] Connected to Coinbase BTC-USD stream");
+
+    // Subscribe to the ticker channel for BTC-USD
+    const subscribeMsg = JSON.stringify({
+      type: "subscribe",
+      product_ids: ["BTC-USD"],
+      channels: ["ticker"],
+    });
+    ws!.send(subscribeMsg);
   });
 
   ws.on("message", (data: WebSocket.RawData) => {
     try {
       const msg = JSON.parse(data.toString());
-      // miniTicker fields: c = close (last price), o = open, h = high, l = low
-      const price = parseFloat(msg.c);
-      if (price > 0) {
-        lastPrice = price;
-        lastUpdate = Date.now();
 
-        // Record price for velocity tracking (sample every ~2s to avoid bloat)
-        const now = Date.now();
-        if (priceBuffer.length === 0 || now - priceBuffer[priceBuffer.length - 1].ts >= 2000) {
-          priceBuffer.push({ price, ts: now });
-          // Trim old entries
-          while (priceBuffer.length > 0 && now - priceBuffer[0].ts > VELOCITY_BUFFER_MAX_AGE_MS) {
-            priceBuffer.shift();
-          }
-        }
-
-        // Snapshot window-open price at the start of each 15-min window
-        const currentWindowStart = getWindowStart();
-        if (currentWindowStart !== windowOpenTs) {
-          windowOpenPrice = price;
-          windowOpenTs = currentWindowStart;
-          logger.info(`[BinanceWS] New window ${currentWindowStart}: open price $${price.toFixed(2)}`);
-        }
+      // Coinbase ticker message has type "ticker" with a "price" field
+      if (msg.type === "ticker" && msg.product_id === "BTC-USD") {
+        const price = parseFloat(msg.price);
+        handlePrice(price);
       }
     } catch {
       // Ignore malformed messages
@@ -73,12 +89,12 @@ function connect() {
   });
 
   ws.on("close", () => {
-    logger.warn("[BinanceWS] Disconnected");
+    logger.warn("[CoinbaseWS] Disconnected");
     if (running) scheduleReconnect();
   });
 
   ws.on("error", (err) => {
-    logger.error(`[BinanceWS] Error: ${err.message}`);
+    logger.error(`[CoinbaseWS] Error: ${err.message}`);
   });
 }
 
@@ -108,12 +124,12 @@ export function stopBinanceWs() {
   }
 }
 
-/** Current BTC price from Binance (0 if not yet received). */
+/** Current BTC price from Coinbase (0 if not yet received). */
 export function getBinancePrice(): number {
   return lastPrice;
 }
 
-/** Timestamp of last Binance update (ms). */
+/** Timestamp of last Coinbase update (ms). */
 export function getBinanceLastUpdate(): number {
   return lastUpdate;
 }
@@ -140,7 +156,7 @@ export function getBtcWindowChange(): number {
   return (lastPrice - open) / open;
 }
 
-/** Returns true if Binance WS is connected and data is fresh (<10s old). */
+/** Returns true if Coinbase WS is connected and data is fresh (<10s old). */
 export function isBinanceFresh(): boolean {
   return lastUpdate > 0 && Date.now() - lastUpdate < 10_000;
 }

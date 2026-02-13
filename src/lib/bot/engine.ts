@@ -857,13 +857,13 @@ async function tradingLoop() {
     if (now - lastEntryEvalTime >= ENTRY_EVAL_INTERVAL_MS) {
       lastEntryEvalTime = now;
 
-      // Gate 1: Binance data must be fresh
+      // Gate 1: Coinbase data must be fresh
       if (!binanceFresh) {
         const lastLog = lastLoggedDecision["_binance"];
         if (!lastLog || now - lastLog.time >= 15000) {
-          lastLoggedDecision["_binance"] = { reason: "no-binance", time: now };
+          lastLoggedDecision["_binance"] = { reason: "no-coinbase", time: now };
           const age = getBinanceLastUpdate() > 0 ? Math.round((now - getBinanceLastUpdate()) / 1000) : -1;
-          broadcastLog(`Waiting for Binance feed (last update: ${age >= 0 ? age + "s ago" : "never"})`);
+          broadcastLog(`Waiting for Coinbase feed (last update: ${age >= 0 ? age + "s ago" : "never"})`);
         }
       } else {
       // Gate 2: Cooldown
