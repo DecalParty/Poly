@@ -269,11 +269,21 @@ export function ensureDb(): Promise<void> {
     addColIfMissing("settings", "scalp_enabled", "INTEGER NOT NULL DEFAULT 1");
     addColIfMissing("settings", "scalp_trade_size", "REAL NOT NULL DEFAULT 12");
     addColIfMissing("settings", "scalp_max_positions", "INTEGER NOT NULL DEFAULT 2");
-    addColIfMissing("settings", "scalp_min_gap", "REAL NOT NULL DEFAULT 0.08");
-    addColIfMissing("settings", "scalp_profit_target", "REAL NOT NULL DEFAULT 0.07");
-    addColIfMissing("settings", "scalp_entry_min", "REAL NOT NULL DEFAULT 0.40");
-    addColIfMissing("settings", "scalp_entry_max", "REAL NOT NULL DEFAULT 0.70");
+    addColIfMissing("settings", "scalp_min_gap", "REAL NOT NULL DEFAULT 0.03");
+    addColIfMissing("settings", "scalp_profit_target", "REAL NOT NULL DEFAULT 0.03");
+    addColIfMissing("settings", "scalp_entry_min", "REAL NOT NULL DEFAULT 0.15");
+    addColIfMissing("settings", "scalp_entry_max", "REAL NOT NULL DEFAULT 0.85");
     addColIfMissing("settings", "scalp_cooldown_windows", "INTEGER NOT NULL DEFAULT 1");
+    addColIfMissing("settings", "scalp_exit_window", "INTEGER NOT NULL DEFAULT 120");
+
+    // Migrate old scalp defaults to new values
+    sqlJsDb.run(`UPDATE settings SET
+      scalp_min_gap = 0.03,
+      scalp_profit_target = 0.03,
+      scalp_entry_min = 0.15,
+      scalp_entry_max = 0.85
+      WHERE scalp_min_gap = 0.08 AND scalp_profit_target = 0.07
+        AND scalp_entry_min = 0.40 AND scalp_entry_max = 0.70`);
 
     sqlJsDb.run("INSERT OR IGNORE INTO settings (id) VALUES (1)");
     persist();
