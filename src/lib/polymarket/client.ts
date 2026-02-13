@@ -134,9 +134,9 @@ export async function placeBuyOrder(
   }
 
   try {
-    // Bump price up by 2 cents to cross the spread and fill as taker
+    // Bump price up by 1 cent to cross the spread and fill as taker
     const tick = parseFloat(tickSize) || 0.01;
-    const crossPrice = Math.min(0.99, Math.round((price + 0.02) / tick) * tick);
+    const crossPrice = Math.min(0.99, Math.round((price + 0.01) / tick) * tick);
 
     logger.info(`[LIVE] BUY: ${size.toFixed(4)} shares @ $${crossPrice.toFixed(4)} (mid=$${price.toFixed(4)}) | token=${tokenId.slice(0, 10)}...`);
     const result = await client.createAndPostOrder({
@@ -199,9 +199,9 @@ export async function placeSellOrder(
   }
 
   try {
-    // Drop price by 2 cents to cross the spread and fill as taker
+    // Drop price by 1 cent to cross the spread and fill as taker
     const tick = parseFloat(tickSize) || 0.01;
-    const crossPrice = Math.max(0.01, Math.round((price - 0.02) / tick) * tick);
+    const crossPrice = Math.max(0.01, Math.round((price - 0.01) / tick) * tick);
 
     logger.info(`[LIVE] SELL: ${shares.toFixed(4)} shares @ $${crossPrice.toFixed(4)} (mid=$${price.toFixed(4)}) | token=${tokenId.slice(0, 10)}...`);
     const result = await client.createAndPostOrder({

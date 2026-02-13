@@ -485,8 +485,12 @@ async function refreshMarket() {
 
 // ---- Main Trading Loop ----
 
+let loopRunning = false;
+
 async function tradingLoop() {
   if (botStatus !== "running") return;
+  if (loopRunning) return; // Prevent concurrent executions
+  loopRunning = true;
 
   try {
     const settings = getCachedSettings();
@@ -753,6 +757,8 @@ async function tradingLoop() {
   } catch (err) {
     logger.error(`Trading loop error: ${err}`);
     broadcastLog(`Error: ${err}`);
+  } finally {
+    loopRunning = false;
   }
 
   broadcastState();
