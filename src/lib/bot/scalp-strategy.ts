@@ -48,25 +48,21 @@ function interpolate(absChange: number): number {
 }
 
 /**
- * Compute fair values for UP and DOWN shares based on BTC % change,
- * time remaining in the window, and recent move velocity.
+ * Compute fair values for UP and DOWN shares based on BTC % change
+ * and time remaining in the window.
  *
- * Two dampening factors pull fair values toward $0.50:
+ * Uses Bitbo's price feed which leads Polymarket by 1-2 seconds.
+ * Because we KNOW our price source is ahead, we trust it fully --
+ * no velocity dampening. Fast moves are our best opportunities
+ * because Polymarket hasn't caught up yet.
  *
- * 1. TIME: early in the window BTC can reverse, so values stay flat.
- *    timeFactor = sqrt(elapsed / 900)
- *
- * 2. VELOCITY: if BTC just spiked (high velocity), the move is fresh
- *    and unreliable. We dampen fair values harder because prices haven't
- *    settled. This prevents the bot from trusting fair values right after
- *    a big sudden jump.
- *    velocityDamp = 1 / (1 + abs(velocity) * 400)
- *    - slow drift (0.01%/min) -> damp ~0.96 (barely affects)
- *    - moderate (0.10%/min)   -> damp ~0.71
- *    - fast spike (0.20%/min) -> damp ~0.56 (halves the deviation)
- *    - huge spike (0.50%/min) -> damp ~0.33
- *
- * Combined: confidence = timeFactor * velocityDamp
+ * TIME dampening still applies: early in the window BTC can still
+ * reverse, so values stay closer to $0.50.
+ *   timeFactor = sqrt(elapsed / 900)
+ *   - 0 min elapsed -> ~0.0 (no confidence)
+ *   - 5 min elapsed -> ~0.58
+ *   - 10 min elapsed -> ~0.82
+ *   - 13 min elapsed -> ~0.93
  */
 export function computeFairValue(
   btcChangePercent: number,
@@ -80,11 +76,9 @@ export function computeFairValue(
   const elapsed = Math.max(0, 900 - secondsRemaining);
   const timeFactor = Math.sqrt(Math.min(1, elapsed / 900));
 
-  // Velocity dampening: fast moves -> less confidence in fair value
-  const velocityDamp = 1 / (1 + Math.abs(btcVelocity) * 400);
-
-  const confidence = timeFactor * velocityDamp;
-  const winningFair = 0.50 + (rawFair - 0.50) * confidence;
+  // No velocity dampening -- Bitbo leads Polymarket, so fast moves
+  // are reliable signals that Polymarket will follow
+  const winningFair = 0.50 + (rawFair - 0.50) * timeFactor;
 
   if (btcChangePercent >= 0) {
     return { up: winningFair, down: 1 - winningFair };
