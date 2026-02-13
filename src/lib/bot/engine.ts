@@ -863,7 +863,7 @@ async function tradingLoop() {
         if (!lastLog || now - lastLog.time >= 15000) {
           lastLoggedDecision["_binance"] = { reason: "no-coinbase", time: now };
           const age = getBinanceLastUpdate() > 0 ? Math.round((now - getBinanceLastUpdate()) / 1000) : -1;
-          broadcastLog(`Waiting for Coinbase feed (last update: ${age >= 0 ? age + "s ago" : "never"})`);
+          broadcastLog(`Waiting for Bitbo feed (last update: ${age >= 0 ? age + "s ago" : "never"})`);
         }
       } else {
       // Gate 2: Cooldown

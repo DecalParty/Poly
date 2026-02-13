@@ -1,10 +1,10 @@
 import WebSocket from "ws";
 import { logger } from "../logger";
 
-// -- Coinbase BTC-USD Real-time Price Feed ------------------------------------
-// Connects to Coinbase WebSocket for BTC-USD ticker updates.
-// Coinbase is a primary Chainlink oracle source, which is what resolves
-// Polymarket BTC windows. This feed leads Polymarket by ~1-2 seconds.
+// -- Bitbo.io BTC Real-time Price Feed ----------------------------------------
+// Connects directly to Bitbo's WebSocket at wss://api.bitbo.io
+// Bitbo's price consistently leads Polymarket by 1-2 seconds.
+// The price is in market.p on each message.
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -18,7 +18,7 @@ let running = false;
 const VELOCITY_BUFFER_MAX_AGE_MS = 180_000; // 3 min
 const priceBuffer: { price: number; ts: number }[] = [];
 
-const COINBASE_WS_URL = "wss://ws-feed.exchange.coinbase.com";
+const BITBO_WS_URL = "wss://api.bitbo.io";
 
 function getWindowStart(): number {
   return Math.floor(Date.now() / 1000 / 900) * 900;
@@ -44,7 +44,7 @@ function handlePrice(price: number) {
   if (currentWindowStart !== windowOpenTs) {
     windowOpenPrice = price;
     windowOpenTs = currentWindowStart;
-    logger.info(`[CoinbaseWS] New window ${currentWindowStart}: open price $${price.toFixed(2)}`);
+    logger.info(`[BitboWS] New window ${currentWindowStart}: open price $${price.toFixed(2)}`);
   }
 }
 
@@ -55,33 +55,26 @@ function connect() {
   }
 
   try {
-    ws = new WebSocket(COINBASE_WS_URL);
+    ws = new WebSocket(BITBO_WS_URL, {
+      headers: { "Origin": "https://bitbo.io" },
+    });
   } catch (err) {
-    logger.error(`[CoinbaseWS] Failed to create WebSocket: ${err}`);
+    logger.error(`[BitboWS] Failed to create WebSocket: ${err}`);
     scheduleReconnect();
     return;
   }
 
   ws.on("open", () => {
-    logger.info("[CoinbaseWS] Connected to Coinbase BTC-USD stream");
-
-    // Subscribe to the ticker channel for BTC-USD
-    const subscribeMsg = JSON.stringify({
-      type: "subscribe",
-      product_ids: ["BTC-USD"],
-      channels: ["ticker"],
-    });
-    ws!.send(subscribeMsg);
+    logger.info("[BitboWS] Connected to Bitbo price stream");
   });
 
   ws.on("message", (data: WebSocket.RawData) => {
     try {
       const msg = JSON.parse(data.toString());
 
-      // Coinbase ticker message has type "ticker" with a "price" field
-      if (msg.type === "ticker" && msg.product_id === "BTC-USD") {
-        const price = parseFloat(msg.price);
-        handlePrice(price);
+      // Bitbo sends { market: { p: 68822.91 } } on each tick
+      if (msg.market && typeof msg.market.p === "number") {
+        handlePrice(msg.market.p);
       }
     } catch {
       // Ignore malformed messages
@@ -89,12 +82,12 @@ function connect() {
   });
 
   ws.on("close", () => {
-    logger.warn("[CoinbaseWS] Disconnected");
+    logger.warn("[BitboWS] Disconnected");
     if (running) scheduleReconnect();
   });
 
   ws.on("error", (err) => {
-    logger.error(`[CoinbaseWS] Error: ${err.message}`);
+    logger.error(`[BitboWS] Error: ${err.message}`);
   });
 }
 
@@ -124,12 +117,12 @@ export function stopBinanceWs() {
   }
 }
 
-/** Current BTC price from Coinbase (0 if not yet received). */
+/** Current BTC price from Bitbo (0 if not yet received). */
 export function getBinancePrice(): number {
   return lastPrice;
 }
 
-/** Timestamp of last Coinbase update (ms). */
+/** Timestamp of last Bitbo update (ms). */
 export function getBinanceLastUpdate(): number {
   return lastUpdate;
 }
@@ -156,7 +149,7 @@ export function getBtcWindowChange(): number {
   return (lastPrice - open) / open;
 }
 
-/** Returns true if Coinbase WS is connected and data is fresh (<10s old). */
+/** Returns true if Bitbo WS is connected and data is fresh (<10s old). */
 export function isBinanceFresh(): boolean {
   return lastUpdate > 0 && Date.now() - lastUpdate < 10_000;
 }
