@@ -446,7 +446,7 @@ export function getState(): BotState {
   // Use first active market's secondsRemaining for dashboard fair value display
   const statusActiveMarkets = getActiveMarkets();
   const displaySecsRemaining = statusActiveMarkets.length > 0 ? statusActiveMarkets[0].secondsRemaining : 450;
-  const fair = computeFairValue(btcChange, displaySecsRemaining);
+  const fair = computeFairValue(btcChange, displaySecsRemaining, getBtcVelocity(60_000));
 
   return {
     status: botStatus,
@@ -726,8 +726,9 @@ async function tradingLoop() {
       }
 
       // Evaluate exit signal
+      const exitVelocity = getBtcVelocity(60_000);
       const exitSignal = evaluateScalpExit(
-        pos.entryPrice, pos.sellPrice, currentPrice, btcChange, pos.side, secsRemaining, settings.scalpProfitTarget
+        pos.entryPrice, pos.sellPrice, currentPrice, btcChange, pos.side, secsRemaining, settings.scalpProfitTarget, exitVelocity
       );
 
       if (exitSignal.action === "trail" && exitSignal.sellPrice && exitSignal.sellPrice > pos.sellPrice) {
@@ -743,7 +744,7 @@ async function tradingLoop() {
         }
         pos.sellPrice = newSellPrice;
         pos.sellOrderId = newSellOrderId;
-        const trailFair = computeFairValue(btcChange, secsRemaining);
+        const trailFair = computeFairValue(btcChange, secsRemaining, exitVelocity);
         broadcastLog(`Trail sell: ${pos.side.toUpperCase()} $${pos.sellPrice.toFixed(2)} (fair $${(pos.side === "yes" ? trailFair.up : trailFair.down).toFixed(2)})`);
       } else if (exitSignal.action === "sell_profit" || exitSignal.action === "sell_loss") {
         // Time-based exit: cancel limit sell, place market sell
@@ -902,21 +903,18 @@ async function tradingLoop() {
           const lastDiag = lastLoggedDecision[diagKey];
           if (!lastDiag || now - lastDiag.time >= 15000) {
             lastLoggedDecision[diagKey] = { reason: "diag", time: now };
-            const fair = computeFairValue(btcChange, market.secondsRemaining);
-            const supportedSide = btcChange >= 0 ? "UP" : "DOWN";
-            const supportedGap = btcChange >= 0 ? fair.up - market.yesPrice : fair.down - market.noPrice;
-            const supportedPrice = btcChange >= 0 ? market.yesPrice : market.noPrice;
-            const supportedFair = btcChange >= 0 ? fair.up : fair.down;
+            const fair = computeFairValue(btcChange, market.secondsRemaining, velocity);
+            const upGap = fair.up - market.yesPrice;
+            const downGap = fair.down - market.noPrice;
             const flat = Math.abs(btcChange) < 0.0005;
             const timeMin = Math.floor(market.secondsRemaining / 60);
             const timeSec = market.secondsRemaining % 60;
-            const velStr = `vel ${(velocity * 100).toFixed(3)}%/min`;
+            const velStr = `vel ${(velocity * 100).toFixed(3)}%/m`;
+            const velDamp = (1 / (1 + Math.abs(velocity) * 400) * 100).toFixed(0);
             if (flat) {
-              broadcastLog(`[${market.asset}] BTC flat (${(btcChange * 100).toFixed(3)}%) ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC $${getBinancePrice().toFixed(0)} | YES $${market.yesPrice.toFixed(2)} NO $${market.noPrice.toFixed(2)}`);
-            } else if (Math.abs(velocity) > 0.0015) {
-              broadcastLog(`[${market.asset}] Fast move (${velStr}) - waiting | BTC ${(btcChange * 100).toFixed(3)}% | ${supportedSide} $${supportedPrice.toFixed(2)} fair $${supportedFair.toFixed(2)}`);
+              broadcastLog(`[${market.asset}] BTC flat (${(btcChange * 100).toFixed(3)}%) ${timeMin}:${timeSec.toString().padStart(2, "0")} left | YES $${market.yesPrice.toFixed(2)} NO $${market.noPrice.toFixed(2)}`);
             } else if (!signal) {
-              broadcastLog(`[${market.asset}] No signal ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC ${(btcChange * 100).toFixed(3)}% ${velStr} | ${supportedSide} $${supportedPrice.toFixed(2)} fair $${supportedFair.toFixed(2)} gap ${supportedGap >= 0 ? "+" : ""}${supportedGap.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+`);
+              broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC ${(btcChange * 100).toFixed(3)}% ${velStr} (${velDamp}% conf) | UP $${market.yesPrice.toFixed(2)} fair $${fair.up.toFixed(2)} gap ${upGap >= 0 ? "+" : ""}${upGap.toFixed(2)} | DOWN $${market.noPrice.toFixed(2)} fair $${fair.down.toFixed(2)} gap ${downGap >= 0 ? "+" : ""}${downGap.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+`);
             }
           }
 

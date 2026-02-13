@@ -48,23 +48,30 @@ function interpolate(absChange: number): number {
 }
 
 /**
- * Compute fair values for UP and DOWN shares based on BTC % change
- * and time remaining in the window.
+ * Compute fair values for UP and DOWN shares based on BTC % change,
+ * time remaining in the window, and recent move velocity.
  *
- * Time-weighting: early in window (12+ min left), fair value is dampened
- * heavily toward $0.50 because BTC can easily reverse. Late in window
- * (< 3 min), the table value is used almost fully.
+ * Two dampening factors pull fair values toward $0.50:
  *
- * timeFactor formula: sqrt(elapsed / 900)
- *   - 0 min elapsed (900s left) -> timeFactor ~0.0 -> fair ~$0.50
- *   - 5 min elapsed (600s left) -> timeFactor ~0.58
- *   - 10 min elapsed (300s left) -> timeFactor ~0.82
- *   - 13 min elapsed (120s left) -> timeFactor ~0.93
- *   - 15 min elapsed (0s left) -> timeFactor 1.0
+ * 1. TIME: early in the window BTC can reverse, so values stay flat.
+ *    timeFactor = sqrt(elapsed / 900)
+ *
+ * 2. VELOCITY: if BTC just spiked (high velocity), the move is fresh
+ *    and unreliable. We dampen fair values harder because prices haven't
+ *    settled. This prevents the bot from trusting fair values right after
+ *    a big sudden jump.
+ *    velocityDamp = 1 / (1 + abs(velocity) * 400)
+ *    - slow drift (0.01%/min) -> damp ~0.96 (barely affects)
+ *    - moderate (0.10%/min)   -> damp ~0.71
+ *    - fast spike (0.20%/min) -> damp ~0.56 (halves the deviation)
+ *    - huge spike (0.50%/min) -> damp ~0.33
+ *
+ * Combined: confidence = timeFactor * velocityDamp
  */
 export function computeFairValue(
   btcChangePercent: number,
-  secondsRemaining: number = 0
+  secondsRemaining: number = 0,
+  btcVelocity: number = 0,
 ): { up: number; down: number } {
   const absChange = Math.abs(btcChangePercent);
   const rawFair = interpolate(absChange);
@@ -72,7 +79,12 @@ export function computeFairValue(
   // Time-weight: dampen toward 0.50 when lots of time remains
   const elapsed = Math.max(0, 900 - secondsRemaining);
   const timeFactor = Math.sqrt(Math.min(1, elapsed / 900));
-  const winningFair = 0.50 + (rawFair - 0.50) * timeFactor;
+
+  // Velocity dampening: fast moves -> less confidence in fair value
+  const velocityDamp = 1 / (1 + Math.abs(btcVelocity) * 400);
+
+  const confidence = timeFactor * velocityDamp;
+  const winningFair = 0.50 + (rawFair - 0.50) * confidence;
 
   if (btcChangePercent >= 0) {
     return { up: winningFair, down: 1 - winningFair };
@@ -102,13 +114,11 @@ export interface ScalpEntrySignal {
 /**
  * Evaluate whether there's a scalp entry opportunity.
  *
- * DIRECTIONAL FILTER: Only buy the side BTC supports.
- *   BTC up   -> only consider YES (UP) being undervalued
- *   BTC down -> only consider NO (DOWN) being undervalued
- * This prevents buying the losing side during strong moves.
+ * Either side can be undervalued. Prefers the side with the larger gap.
  *
- * VELOCITY FILTER: If BTC moved too fast recently (>0.15% in 60s),
- * suppress entry - prices are unstable and fair value is unreliable.
+ * Velocity is baked into fair value computation: fast BTC moves pull
+ * fair values toward $0.50, naturally shrinking gaps and requiring
+ * a bigger real undervaluation to trigger an entry.
  */
 export function evaluateScalpEntry(
   btcChangePercent: number,
@@ -122,42 +132,34 @@ export function evaluateScalpEntry(
 ): ScalpEntrySignal | null {
   if (isBtcFlat(btcChangePercent)) return null;
 
-  // Velocity filter: if BTC moved >0.15% in the last 60s, prices are too volatile
-  if (Math.abs(btcVelocity) > 0.0015) return null;
-
-  const fair = computeFairValue(btcChangePercent, secondsRemaining);
-
-  // Directional filter: only buy the side BTC is pushing
-  // BTC up (positive change) -> only buy YES (UP shares are undervalued, not DOWN)
-  // BTC down (negative change) -> only buy NO (DOWN shares are undervalued, not UP)
-  const btcUp = btcChangePercent > 0;
-
+  const fair = computeFairValue(btcChangePercent, secondsRemaining, btcVelocity);
   const upGap = fair.up - yesPrice;
   const downGap = fair.down - noPrice;
 
-  if (btcUp) {
-    // Only consider UP side
-    const upValid = upGap >= minGap && yesPrice >= entryMin && yesPrice <= entryMax;
-    if (!upValid) return null;
+  // Check both sides
+  const upValid = upGap >= minGap && yesPrice >= entryMin && yesPrice <= entryMax;
+  const downValid = downGap >= minGap && noPrice >= entryMin && noPrice <= entryMax;
+
+  if (!upValid && !downValid) return null;
+
+  // Pick the side with the bigger gap
+  if (upValid && (!downValid || upGap >= downGap)) {
     return {
       side: "yes",
       fairValue: fair.up,
       actualPrice: yesPrice,
       gap: upGap,
-      reason: `UP undervalued: $${yesPrice.toFixed(2)} vs fair $${fair.up.toFixed(2)} (gap $${upGap.toFixed(2)}, vel ${(btcVelocity * 100).toFixed(3)}%)`,
-    };
-  } else {
-    // Only consider DOWN side
-    const downValid = downGap >= minGap && noPrice >= entryMin && noPrice <= entryMax;
-    if (!downValid) return null;
-    return {
-      side: "no",
-      fairValue: fair.down,
-      actualPrice: noPrice,
-      gap: downGap,
-      reason: `DOWN undervalued: $${noPrice.toFixed(2)} vs fair $${fair.down.toFixed(2)} (gap $${downGap.toFixed(2)}, vel ${(btcVelocity * 100).toFixed(3)}%)`,
+      reason: `UP undervalued: $${yesPrice.toFixed(2)} vs fair $${fair.up.toFixed(2)} (gap $${upGap.toFixed(2)}, vel ${(btcVelocity * 100).toFixed(3)}%/m)`,
     };
   }
+
+  return {
+    side: "no",
+    fairValue: fair.down,
+    actualPrice: noPrice,
+    gap: downGap,
+    reason: `DOWN undervalued: $${noPrice.toFixed(2)} vs fair $${fair.down.toFixed(2)} (gap $${downGap.toFixed(2)}, vel ${(btcVelocity * 100).toFixed(3)}%/m)`,
+  };
 }
 
 // ??? Exit Signal ?????????????????????????????????????????????????????????????
@@ -189,8 +191,9 @@ export function evaluateScalpExit(
   positionSide: "yes" | "no",
   secondsRemaining: number,
   profitTarget: number,
+  btcVelocity: number = 0,
 ): ScalpExitSignal {
-  const fair = computeFairValue(btcChangePercent, secondsRemaining);
+  const fair = computeFairValue(btcChangePercent, secondsRemaining, btcVelocity);
   const fairForSide = positionSide === "yes" ? fair.up : fair.down;
 
   // Trail: if fair value suggests a higher sell, raise the limit
