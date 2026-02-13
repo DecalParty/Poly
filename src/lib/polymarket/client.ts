@@ -69,7 +69,7 @@ export async function getClobClient(): Promise<ClobClient | null> {
   const funderAddress = process.env.FUNDER_ADDRESS;
   const host = process.env.CLOB_API_URL || "https://clob.polymarket.com";
   const chainId = parseInt(process.env.CHAIN_ID || "137");
-  const sigType = parseInt(process.env.SIGNATURE_TYPE || "0");
+  const sigType = parseInt(process.env.SIGNATURE_TYPE || "2");
 
   if (!privateKey || !funderAddress) {
     logger.warn("No PRIVATE_KEY or FUNDER_ADDRESS set — live trading unavailable");
