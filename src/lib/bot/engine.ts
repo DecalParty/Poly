@@ -10,7 +10,7 @@ import { executeBuy, executeSell, recordResolution } from "./executor";
 import { arbTick, getArbState, getArbStats, setArbCallbacks, getArbCapitalDeployed } from "./arbitrage";
 import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount, getRecentTradeConditionIds } from "../db/queries";
 import { startMarketScanner, stopMarketScanner, getActiveMarkets, getActiveMarketForAsset, getRecentOutcomes, markOutcomeResolved } from "../prices/market-scanner";
-import { getClobClient, redeemWinnings } from "../polymarket/client";
+import { getClobClient, redeemWinnings, getClaimablePositions } from "../polymarket/client";
 import { Wallet } from "@ethersproject/wallet";
 import { StaticJsonRpcProvider } from "@ethersproject/providers";
 import { Contract } from "@ethersproject/contracts";
@@ -849,47 +849,61 @@ export async function startBot(): Promise<{ success: boolean; error?: string }> 
     addAlert("info", "Paper mode - CLOB client not needed");
   }
 
-  // Scan for unclaimed winnings using CLOB API (DB may be empty)
-  if (!settings.paperTrading && clobReady) {
+  // Scan for unclaimed winnings from recent buy trades and check on-chain
+  if (!settings.paperTrading) {
     try {
-      const client = await getClobClient();
-      if (client) {
-        const { checkProxyTokenBalance } = await import("../polymarket/client");
-        const trades = await client.getTrades(undefined, true);
-        const seenConditions = new Set<string>();
+      // Primary: Use CLOB API to find all claimable positions (trades with remaining balance on resolved markets)
+      const claimablePositions = await getClaimablePositions();
+      if (claimablePositions.length > 0) {
         let queued = 0;
+        for (const pos of claimablePositions) {
+          const alreadyQueued = pendingClaims.some(c => c.conditionId === pos.conditionId);
+          if (alreadyQueued) continue;
 
-        logger.info(`[Redeem] Startup scan: found ${trades?.length || 0} trade(s) from CLOB API`);
+          pendingClaims.push({
+            conditionId: pos.conditionId,
+            negRisk: pos.negRisk,
+            asset: "BTC", // CLOB API doesn't return asset name, default to BTC
+            attempts: 0,
+            nextAttempt: Date.now() + 5000,
+          });
+          queued++;
+          logger.info(`[Redeem] CLOB API found claimable: ${pos.balance} tokens for ${pos.conditionId.slice(0, 10)}...`);
+        }
+        if (queued > 0) {
+          broadcastLog(`CLOB API found ${queued} claimable position(s) - queued for auto-claim`);
+        }
+      }
 
-        if (trades && trades.length > 0) {
-          for (const t of trades) {
-            const conditionId = (t as any).market;
-            if (!conditionId || seenConditions.has(conditionId)) continue;
-            seenConditions.add(conditionId);
+      // Fallback: Also scan recent DB trades and check on-chain balances
+      const recentTrades = getRecentTradeConditionIds(6);
+      if (recentTrades.length > 0) {
+        const { checkProxyTokenBalance } = await import("../polymarket/client");
+        let queued = 0;
+        for (const t of recentTrades) {
+          const alreadyQueued = pendingClaims.some(c => c.conditionId === t.conditionId);
+          if (alreadyQueued) continue;
 
-            const alreadyQueued = pendingClaims.some(c => c.conditionId === conditionId);
-            if (alreadyQueued) continue;
-
-            const hasTokens = await checkProxyTokenBalance(conditionId);
-            if (hasTokens) {
-              pendingClaims.push({
-                conditionId,
-                negRisk: true,
-                asset: "BTC",
-                attempts: 0,
-                nextAttempt: Date.now() + 5000,
-              });
-              queued++;
-              logger.info(`[Redeem] Queued conditionId=${conditionId.slice(0, 10)}... (has tokens)`);
-            }
+          const hasTokens = await checkProxyTokenBalance(t.conditionId);
+          if (hasTokens) {
+            pendingClaims.push({
+              conditionId: t.conditionId,
+              negRisk: true,
+              asset: t.asset,
+              attempts: 0,
+              nextAttempt: Date.now() + 5000,
+            });
+            queued++;
+            logger.info(`[Redeem] DB scan found claimable: ${t.asset} conditionId=${t.conditionId.slice(0, 10)}...`);
           }
         }
-
         if (queued > 0) {
-          broadcastLog(`Found ${queued} market(s) with unclaimed tokens - queued for auto-claim`);
-        } else {
-          logger.info(`[Redeem] No unclaimed tokens found`);
+          broadcastLog(`DB scan found ${queued} additional claimable position(s)`);
         }
+      }
+
+      if (pendingClaims.length === 0) {
+        logger.info(`[Redeem] No unclaimed positions found`);
       }
     } catch (err) {
       logger.error(`[Redeem] Startup claim scan failed: ${err}`);

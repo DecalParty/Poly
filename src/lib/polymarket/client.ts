@@ -1,6 +1,7 @@
 import { ClobClient, ApiKeyCreds, Side, OrderType, type TickSize } from "@polymarket/clob-client";
 import { Wallet } from "@ethersproject/wallet";
 import { StaticJsonRpcProvider } from "@ethersproject/providers";
+import { Contract } from "@ethersproject/contracts";
 import axios from "axios";
 import https from "https";
 import { logger } from "../logger";
@@ -554,9 +555,32 @@ async function verifyFokFill(
 // Re-export useful types
 export { Side, OrderType };
 
+// ---- Polymarket contract addresses (Polygon mainnet) ----
+const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
+const NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296";
+const COLLATERAL_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+
+const CTF_ABI = [
+  "function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)",
+  "function balanceOf(address owner, uint256 id) view returns (uint256)",
+  "function getCollectionId(bytes32 parentCollectionId, bytes32 conditionId, uint256 indexSet) view returns (bytes32)",
+  "function getPositionId(address collateralToken, bytes32 collectionId) view returns (uint256)",
+  "function payoutDenominator(bytes32 conditionId) view returns (uint256)",
+];
+
+const NEG_RISK_ABI = [
+  "function redeemPositions(bytes32 conditionId, uint256[] indexSets)",
+];
+
+const GNOSIS_SAFE_ABI = [
+  "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)",
+  "function getTransactionHash(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, uint256 _nonce) view returns (bytes32)",
+  "function nonce() view returns (uint256)",
+];
+
 /**
- * Check if the proxy wallet (FUNDER_ADDRESS) holds any conditional tokens
- * for a given conditionId. Uses CTF getCollectionId + getPositionId for correct token IDs.
+ * Check if the proxy wallet holds conditional tokens for a given conditionId
+ * using the CLOB API's balance endpoint when possible, falling back to on-chain.
  */
 export async function checkProxyTokenBalance(conditionId: string): Promise<boolean> {
   const funderAddress = process.env.FUNDER_ADDRESS;
@@ -565,22 +589,16 @@ export async function checkProxyTokenBalance(conditionId: string): Promise<boole
   try {
     const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
     const provider = new StaticJsonRpcProvider(rpcUrl, 137);
-    const { Contract } = await import("@ethersproject/contracts");
-    const ctfWithPositions = new Contract(CTF_ADDRESS, [
-      ...CTF_ABI,
-      "function getCollectionId(bytes32 parentCollectionId, bytes32 conditionId, uint256 indexSet) view returns (bytes32)",
-      "function getPositionId(address collateralToken, bytes32 collectionId) view returns (uint256)",
-    ], provider);
-
+    const ctf = new Contract(CTF_ADDRESS, CTF_ABI, provider);
     const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
     for (const idx of [1, 2]) {
       try {
-        const collectionId = await ctfWithPositions.getCollectionId(ZERO_BYTES32, conditionId, idx);
-        const positionId = await ctfWithPositions.getPositionId(COLLATERAL_ADDRESS, collectionId);
-        const bal = await ctfWithPositions.balanceOf(funderAddress, positionId);
+        const collectionId = await ctf.getCollectionId(ZERO_BYTES32, conditionId, idx);
+        const positionId = await ctf.getPositionId(COLLATERAL_ADDRESS, collectionId);
+        const bal = await ctf.balanceOf(funderAddress, positionId);
         if (Number(bal) > 0) {
-          logger.info(`[Redeem] Proxy wallet has ${bal.toString()} tokens for conditionId=${conditionId.slice(0, 10)}... (idx=${idx})`);
+          logger.info(`[Redeem] Proxy has ${bal.toString()} tokens for ${conditionId.slice(0, 10)}... (idx=${idx})`);
           return true;
         }
       } catch {
@@ -594,30 +612,102 @@ export async function checkProxyTokenBalance(conditionId: string): Promise<boole
   }
 }
 
-// ---- Polymarket contract addresses (Polygon mainnet) ----
-const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
-const NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296";
-const COLLATERAL_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+/**
+ * Check if a condition has been resolved on-chain (payouts set) using CTF payoutDenominator.
+ * Returns true if the market has been resolved and payouts are available for redemption.
+ */
+async function isConditionResolvedOnChain(conditionId: string): Promise<boolean> {
+  try {
+    const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
+    const provider = new StaticJsonRpcProvider(rpcUrl, 137);
+    const ctf = new Contract(CTF_ADDRESS, CTF_ABI, provider);
+    const denom = await ctf.payoutDenominator(conditionId);
+    return Number(denom) > 0;
+  } catch {
+    return false;
+  }
+}
 
-const CTF_ABI = [
-  "function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)",
-  "function balanceOf(address owner, uint256 id) view returns (uint256)",
-];
+/**
+ * Use the CLOB API to find recent trades and check which token IDs have
+ * remaining balances that may be claimable. This is more reliable than
+ * only scanning by conditionId since it uses the actual token IDs
+ * from our trade history.
+ */
+export async function getClaimablePositions(): Promise<{
+  conditionId: string;
+  tokenId: string;
+  balance: number;
+  market: string;
+  negRisk: boolean;
+}[]> {
+  const client = await getClobClient();
+  if (!client) return [];
 
-const NEG_RISK_ABI = [
-  "function redeemPositions(bytes32 conditionId, uint256[] amounts)",
-];
+  try {
+    const trades = await client.getTrades(undefined, false);
+    if (!trades || trades.length === 0) return [];
 
-const GNOSIS_SAFE_ABI = [
-  "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)",
-  "function getTransactionHash(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, uint256 _nonce) view returns (bytes32)",
-  "function nonce() view returns (uint256)",
-];
+    // Deduplicate by asset_id (token ID) and group by conditionId (market)
+    const tokenMap = new Map<string, { conditionId: string; tokenId: string; market: string }>();
+    for (const t of trades) {
+      if (!tokenMap.has(t.asset_id)) {
+        tokenMap.set(t.asset_id, {
+          conditionId: t.market,
+          tokenId: t.asset_id,
+          market: t.market,
+        });
+      }
+    }
+
+    const claimable: {
+      conditionId: string;
+      tokenId: string;
+      balance: number;
+      market: string;
+      negRisk: boolean;
+    }[] = [];
+
+    for (const [tokenId, info] of tokenMap) {
+      try {
+        const bal = await client.getBalanceAllowance({
+          asset_type: "CONDITIONAL" as any,
+          token_id: tokenId,
+        });
+        const balance = parseFloat(bal?.balance || "0");
+        if (balance > 0) {
+          // Check if the condition has been resolved on-chain
+          const resolved = await isConditionResolvedOnChain(info.conditionId);
+          if (resolved) {
+            const negRisk = await client.getNegRisk(tokenId).catch(() => false);
+            claimable.push({
+              conditionId: info.conditionId,
+              tokenId,
+              balance,
+              market: info.market,
+              negRisk: !!negRisk,
+            });
+            logger.info(`[Redeem] Claimable: ${balance} tokens for ${info.conditionId.slice(0, 10)}... (token=${tokenId.slice(0, 10)}...)`);
+          }
+        }
+      } catch (err) {
+        logger.debug(`[Redeem] Balance check failed for token ${tokenId.slice(0, 10)}...: ${err}`);
+      }
+    }
+
+    return claimable;
+  } catch (err) {
+    logger.error(`[Redeem] Failed to scan claimable positions: ${err}`);
+    return [];
+  }
+}
 
 /**
  * Redeem winning conditional tokens back to USDC after a market resolves.
  * Executes through the Gnosis Safe proxy wallet (FUNDER_ADDRESS) since
  * that's where the conditional tokens are held.
+ *
+ * Uses CTF redeemPositions for standard markets, NegRiskAdapter for negRisk markets.
  */
 export async function redeemWinnings(
   conditionId: string,
@@ -633,7 +723,6 @@ export async function redeemWinnings(
     const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
     const provider = new StaticJsonRpcProvider(rpcUrl, 137);
     const signer = new Wallet(privateKey, provider);
-    const { Contract } = await import("@ethersproject/contracts");
     const { Interface } = await import("@ethersproject/abi");
     const { arrayify, hexlify } = await import("@ethersproject/bytes");
 
@@ -641,9 +730,15 @@ export async function redeemWinnings(
     const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
     const indexSets = [1, 2];
 
-    // Check if proxy wallet has any tokens to redeem (skip check and just try — revert is harmless)
-    const hasTokens = await checkProxyTokenBalance(conditionId);
+    // Verify the condition is actually resolved on-chain before attempting redeem
+    const resolved = await isConditionResolvedOnChain(conditionId);
+    if (!resolved) {
+      logger.info(`[Redeem] Condition ${conditionId.slice(0, 10)}... not yet resolved on-chain`);
+      return { success: false, error: "Condition not yet resolved on-chain" };
+    }
 
+    // Check if proxy wallet has any tokens to redeem
+    const hasTokens = await checkProxyTokenBalance(conditionId);
     if (!hasTokens) {
       logger.info(`[Redeem] No tokens at proxy wallet for ${conditionId.slice(0, 10)}...`);
       return { success: true };
@@ -667,22 +762,28 @@ export async function redeemWinnings(
     const safe = new Contract(funderAddress, GNOSIS_SAFE_ABI, signer);
     const nonce = await safe.nonce();
 
-    // Get the Safe transaction hash
-    const txHash = await safe.getTransactionHash(
+    // Get the Safe transaction hash for signing
+    const safeTxHash = await safe.getTransactionHash(
       to, 0, callData, 0, 0, 0, 0, ZERO_ADDRESS, ZERO_ADDRESS, nonce
     );
 
-    // Sign with eth_sign and adjust v += 4 for Gnosis Safe signature type
-    const rawSig = await signer.signMessage(arrayify(txHash));
+    // Sign with eth_sign — Gnosis Safe expects signature type = eth_sign (v += 4)
+    const rawSig = await signer.signMessage(arrayify(safeTxHash));
     const sigBytes = arrayify(rawSig);
     sigBytes[64] += 4;
     const adjustedSig = hexlify(sigBytes);
 
     // Execute the redemption through the Safe
     const tx = await safe.execTransaction(
-      to, 0, callData, 0, 0, 0, 0, ZERO_ADDRESS, ZERO_ADDRESS, adjustedSig
+      to, 0, callData, 0, 0, 0, 0, ZERO_ADDRESS, ZERO_ADDRESS, adjustedSig,
+      { gasLimit: 500_000 }
     );
-    await tx.wait();
+    const receipt = await tx.wait();
+
+    if (receipt.status === 0) {
+      logger.error(`[Redeem] Safe tx reverted: ${tx.hash} | conditionId=${conditionId.slice(0, 10)}...`);
+      return { success: false, error: "Safe transaction reverted on-chain" };
+    }
 
     logger.info(`[Redeem] Claimed via Safe tx: ${tx.hash} | conditionId=${conditionId.slice(0, 10)}...`);
     return { success: true };
