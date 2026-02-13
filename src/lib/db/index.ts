@@ -278,13 +278,12 @@ export function ensureDb(): Promise<void> {
 
     // Force scalp defaults to new strategy values
     sqlJsDb.run(`UPDATE settings SET
-      scalp_min_gap = 0.03,
+      scalp_min_gap = 0.02,
       scalp_profit_target = 0.03,
       scalp_entry_min = 0.15,
       scalp_entry_max = 0.85,
       scalp_exit_window = 120
-      WHERE ROUND(scalp_min_gap, 2) != 0.03
-         OR ROUND(scalp_profit_target, 2) != 0.03
+      WHERE ROUND(scalp_min_gap, 2) NOT IN (0.01, 0.02)
          OR ROUND(scalp_entry_min, 2) != 0.15
          OR ROUND(scalp_entry_max, 2) != 0.85`);
 

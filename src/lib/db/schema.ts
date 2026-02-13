@@ -71,7 +71,7 @@ export const settings = sqliteTable("settings", {
   scalpEnabled: integer("scalp_enabled", { mode: "boolean" }).notNull().default(true),
   scalpTradeSize: real("scalp_trade_size").notNull().default(12),
   scalpMaxPositions: integer("scalp_max_positions").notNull().default(2),
-  scalpMinGap: real("scalp_min_gap").notNull().default(0.03),
+  scalpMinGap: real("scalp_min_gap").notNull().default(0.02),
   scalpProfitTarget: real("scalp_profit_target").notNull().default(0.03),
   scalpEntryMin: real("scalp_entry_min").notNull().default(0.15),
   scalpEntryMax: real("scalp_entry_max").notNull().default(0.85),

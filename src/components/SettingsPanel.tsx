@@ -53,7 +53,7 @@ export default function SettingsPanel({ settings, botStatus, onSave, circuitBrea
         <div className="grid grid-cols-2 gap-3">
           <NF label="Trade Size" value={f.scalpTradeSize ?? 12} field="scalpTradeSize" onChange={handleNumChange} disabled={disabled} prefix="$" step="1" />
           <NF label="Max Positions" value={f.scalpMaxPositions ?? 2} field="scalpMaxPositions" onChange={handleNumChange} disabled={disabled} step="1" />
-          <NF label="Min Gap" value={f.scalpMinGap ?? 0.03} field="scalpMinGap" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
+          <NF label="Min Gap" value={f.scalpMinGap ?? 0.02} field="scalpMinGap" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
           <NF label="Profit Target" value={f.scalpProfitTarget ?? 0.03} field="scalpProfitTarget" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
           <NF label="Entry Min" value={f.scalpEntryMin ?? 0.15} field="scalpEntryMin" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
           <NF label="Entry Max" value={f.scalpEntryMax ?? 0.85} field="scalpEntryMax" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
@@ -62,7 +62,7 @@ export default function SettingsPanel({ settings, botStatus, onSave, circuitBrea
         </div>
         <div className="rounded-xl bg-white/[0.015] border border-white/[0.04] p-3">
           <p className="text-[10px] text-gray-500 font-semibold mb-1">How it works</p>
-          <p className="text-[10px] text-gray-600 leading-relaxed">Uses Bitbo BTC price (leads Polymarket by 1-2s) + 30min trend to calculate fair values. When a side is {((f.scalpMinGap ?? 0.03) * 100).toFixed(0)}+ cents below fair value, buys it. Sells at entry + ${(f.scalpProfitTarget ?? 0.03).toFixed(2)}. Stop loss at 2x target. Time exit {f.scalpExitWindow ?? 120}s before resolution.</p>
+          <p className="text-[10px] text-gray-600 leading-relaxed">Derives fair values from Polymarket prices + Bitbo BTC (1-2s lead) + 30min trend. Market buys when a side is {((f.scalpMinGap ?? 0.02) * 100).toFixed(0)}+ cents undervalued. Market sells at entry + ${(f.scalpProfitTarget ?? 0.03).toFixed(2)}. Stop loss at 2x target. Time exit {f.scalpExitWindow ?? 120}s before resolution.</p>
         </div>
       </div>}
     </Sec>

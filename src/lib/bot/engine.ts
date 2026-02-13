@@ -10,7 +10,7 @@ import { recordResolution } from "./executor";
 import { insertTrade } from "../db/queries";
 import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount, getRecentTradeConditionIds } from "../db/queries";
 import { startMarketScanner, stopMarketScanner, getActiveMarkets, getActiveMarketForAsset, getRecentOutcomes, markOutcomeResolved } from "../prices/market-scanner";
-import { getClobClient, redeemWinnings, getClaimablePositions, placeLimitBuyOrder, placeLimitSellOrder, cancelOrder, getOrderStatus, placeSellOrder } from "../polymarket/client";
+import { getClobClient, redeemWinnings, getClaimablePositions, placeBuyOrder, placeLimitBuyOrder, placeLimitSellOrder, cancelOrder, getOrderStatus, placeSellOrder } from "../polymarket/client";
 import { startBinanceWs, stopBinanceWs, getBinancePrice, getWindowOpenPrice, getBtcWindowChange, isBinanceFresh, getBinanceLastUpdate, getBtcVelocity, getBtcDelta, getBtcTrend } from "../prices/binance-ws";
 import { Wallet } from "@ethersproject/wallet";
 import { StaticJsonRpcProvider } from "@ethersproject/providers";
@@ -974,27 +974,54 @@ async function tradingLoop() {
               broadcastLog(`[PAPER] Scalp entry: ${signal.reason} | sell target $${sellTarget.toFixed(2)}`);
               addAlert("info", `Scalp buy: ${signal.side.toUpperCase()} @ $${signal.actualPrice.toFixed(2)}`, market.asset);
             } else {
-              // Live: place limit buy (postOnly)
-              // GTC without postOnly so it can fill immediately as taker
-              const result = await placeLimitBuyOrder(tokenId, signal.actualPrice, shares, market.tickSize, market.negRisk, false);
+              // Live: market buy (cross spread for instant fill)
+              const result = await placeBuyOrder(tokenId, signal.actualPrice, shares, market.tickSize, market.negRisk);
               if (result.success && result.orderId) {
-                pendingBuys.push({
-                  orderId: result.orderId,
+                const fillPrice = result.filledPrice || signal.actualPrice;
+                const fillShares = result.filledSize || shares;
+                const sellTarget = Math.min(0.99, Math.round((fillPrice + settings.scalpProfitTarget) * 100) / 100);
+
+                scalpPositions.push({
+                  id: result.orderId,
                   conditionId: market.conditionId,
                   slug: market.slug,
                   asset: market.asset,
                   side: signal.side,
                   tokenId,
-                  price: signal.actualPrice,
-                  size: shares,
-                  placedAt: now,
+                  entryPrice: fillPrice,
+                  shares: fillShares,
+                  costBasis: fillShares * fillPrice,
+                  sellPrice: sellTarget,
+                  sellOrderId: null,
+                  buyOrderId: result.orderId,
+                  entryTime: now,
                   windowEndTs: windowTs,
-                  tickSize: market.tickSize,
-                  negRisk: market.negRisk,
                 });
                 marketInfoCache.set(market.conditionId, market.market);
-                broadcastLog(`Limit buy placed: ${signal.reason}`);
-                addAlert("info", `Limit buy: ${signal.side.toUpperCase()} @ $${signal.actualPrice.toFixed(2)}`, market.asset);
+
+                insertTrade({
+                  timestamp: new Date().toISOString(),
+                  conditionId: market.conditionId,
+                  slug: market.slug,
+                  side: signal.side,
+                  action: "buy",
+                  price: fillPrice,
+                  amount: fillShares * fillPrice,
+                  shares: fillShares,
+                  pnl: null,
+                  paper: false,
+                  orderId: result.orderId,
+                  asset: market.asset,
+                  subStrategy: "scalp",
+                  binancePriceAtEntry: getBinancePrice(),
+                  slippage: fillPrice - signal.actualPrice,
+                  takerFee: 0,
+                });
+
+                broadcastLog(`Market buy FILLED: ${signal.side.toUpperCase()} ${fillShares.toFixed(1)} @ $${fillPrice.toFixed(2)} | target $${sellTarget.toFixed(2)}`);
+                addAlert("info", `Scalp buy: ${signal.side.toUpperCase()} @ $${fillPrice.toFixed(2)}`, market.asset);
+              } else {
+                broadcastLog(`Market buy FAILED: ${result.error || "unknown"}`);
               }
             }
 

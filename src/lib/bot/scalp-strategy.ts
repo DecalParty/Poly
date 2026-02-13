@@ -249,8 +249,9 @@ export function evaluateScalpExit(
     };
   }
 
-  // Stop loss: if price dropped more than 2x the profit target, cut it
-  if (pnl < -(profitTarget * 2)) {
+  // Stop loss: if price dropped more than 5x the profit target, cut it.
+  // Keep wide -- Polymarket prices bounce. Don't get shaken out of a good position.
+  if (pnl < -(profitTarget * 5)) {
     return {
       action: "sell_loss",
       sellPrice: currentPrice,

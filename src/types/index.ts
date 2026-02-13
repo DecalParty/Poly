@@ -101,7 +101,7 @@ export const DEFAULT_SETTINGS: BotSettings = {
   scalpEnabled: true,
   scalpTradeSize: 12,
   scalpMaxPositions: 2,
-  scalpMinGap: 0.03,
+  scalpMinGap: 0.02,
   scalpProfitTarget: 0.03,
   scalpEntryMin: 0.15,
   scalpEntryMax: 0.85,
