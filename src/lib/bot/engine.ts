@@ -849,37 +849,46 @@ export async function startBot(): Promise<{ success: boolean; error?: string }> 
     addAlert("info", "Paper mode - CLOB client not needed");
   }
 
-  // Scan for unclaimed winnings from recent buy trades and check on-chain
-  if (!settings.paperTrading) {
+  // Scan for unclaimed winnings using CLOB API (DB may be empty)
+  if (!settings.paperTrading && clobReady) {
     try {
-      const recentTrades = getRecentTradeConditionIds(6); // Last 6 hours
-      logger.info(`[Redeem] Startup scan: found ${recentTrades.length} conditionId(s) from recent live trades`);
-
-      if (recentTrades.length > 0) {
-        // Check on-chain if proxy wallet has tokens for these markets
+      const client = await getClobClient();
+      if (client) {
         const { checkProxyTokenBalance } = await import("../polymarket/client");
+        const trades = await client.getTrades(undefined, true);
+        const seenConditions = new Set<string>();
         let queued = 0;
-        for (const t of recentTrades) {
-          const alreadyQueued = pendingClaims.some(c => c.conditionId === t.conditionId);
-          if (alreadyQueued) continue;
 
-          const hasTokens = await checkProxyTokenBalance(t.conditionId);
-          if (hasTokens) {
-            pendingClaims.push({
-              conditionId: t.conditionId,
-              negRisk: true,
-              asset: t.asset,
-              attempts: 0,
-              nextAttempt: Date.now() + 5000,
-            });
-            queued++;
-            logger.info(`[Redeem] Queued ${t.asset} conditionId=${t.conditionId.slice(0, 10)}... (has tokens)`);
+        logger.info(`[Redeem] Startup scan: found ${trades?.length || 0} trade(s) from CLOB API`);
+
+        if (trades && trades.length > 0) {
+          for (const t of trades) {
+            const conditionId = (t as any).market;
+            if (!conditionId || seenConditions.has(conditionId)) continue;
+            seenConditions.add(conditionId);
+
+            const alreadyQueued = pendingClaims.some(c => c.conditionId === conditionId);
+            if (alreadyQueued) continue;
+
+            const hasTokens = await checkProxyTokenBalance(conditionId);
+            if (hasTokens) {
+              pendingClaims.push({
+                conditionId,
+                negRisk: true,
+                asset: "BTC",
+                attempts: 0,
+                nextAttempt: Date.now() + 5000,
+              });
+              queued++;
+              logger.info(`[Redeem] Queued conditionId=${conditionId.slice(0, 10)}... (has tokens)`);
+            }
           }
         }
+
         if (queued > 0) {
           broadcastLog(`Found ${queued} market(s) with unclaimed tokens - queued for auto-claim`);
         } else {
-          logger.info(`[Redeem] No unclaimed tokens found in proxy wallet`);
+          logger.info(`[Redeem] No unclaimed tokens found`);
         }
       }
     } catch (err) {
