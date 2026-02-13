@@ -1,4 +1,4 @@
-import { placeLimitBuyOrder, cancelOrders } from "../polymarket/client";
+import { placeLimitBuyOrder, cancelOrders, getOrderStatus } from "../polymarket/client";
 import { insertTrade } from "../db/queries";
 import { logger } from "../logger";
 import type {
@@ -113,6 +113,10 @@ export async function arbTick(
     // Simulate fills in paper mode
     if (paperTrading && currentWindow && currentWindow.status === "active") {
       simulatePaperFills(currentWindow, market);
+    }
+    // In live mode, poll actual fill status from Polymarket
+    if (!paperTrading && currentWindow && currentWindow.status === "active") {
+      await pollLiveFills(currentWindow);
     }
     return;
   }
@@ -251,6 +255,43 @@ async function placeLadderOrders(
 
   onLog(`[ARB] Placed ${settings.arbLadderLevels.length * 2} limit orders for ${windowId}`);
   onAlert("info", `Arb: Placed ladder orders for ${settings.arbMarket}`, settings.arbMarket);
+}
+
+// --- Live Fill Polling (checks actual order status on Polymarket) -----------------
+
+async function pollLiveFills(window: ArbWindowState) {
+  let changed = false;
+
+  for (const order of [...window.upSide.orders, ...window.downSide.orders]) {
+    if ((order.status === "placed" || order.status === "partial") && order.orderId) {
+      const status = await getOrderStatus(order.orderId);
+      if (!status) continue;
+
+      if (status.sizeFilled > order.filledSize) {
+        order.filledSize = status.sizeFilled;
+        const s = status.status.toUpperCase();
+        if (s === "MATCHED" || s === "CLOSED" || s === "FILLED") {
+          order.status = "filled";
+        } else if (status.sizeFilled > 0) {
+          order.status = "partial";
+        }
+        changed = true;
+      }
+
+      // Mark cancelled/expired orders
+      const s = status.status.toUpperCase();
+      if (s === "CANCELLED" || s === "EXPIRED" || s === "REJECTED") {
+        order.status = "cancelled";
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) {
+    recalcSideFills(window.upSide);
+    recalcSideFills(window.downSide);
+    updateCombinedCost();
+  }
 }
 
 // --- Paper Fill Simulation -------------------------------------------------------

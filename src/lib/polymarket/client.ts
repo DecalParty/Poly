@@ -118,6 +118,7 @@ export function getReadOnlyClient(): ClobClient {
 
 /**
  * Place a buy order on Polymarket.
+ * Verifies fill status before returning success to prevent phantom trades.
  */
 export async function placeBuyOrder(
   tokenId: string,
@@ -125,7 +126,7 @@ export async function placeBuyOrder(
   size: number,
   tickSize: string,
   negRisk: boolean
-): Promise<{ success: boolean; orderId?: string; error?: string }> {
+): Promise<{ success: boolean; orderId?: string; error?: string; filledSize?: number; filledPrice?: number }> {
   const client = await getClobClient();
   if (!client) {
     return { success: false, error: "CLOB client not initialized" };
@@ -142,10 +143,29 @@ export async function placeBuyOrder(
       expiration: undefined,
     }, { tickSize: tickSize as TickSize, negRisk });
 
-    logger.info(`Buy order placed: ${size} shares @ $${price} | token=${tokenId}`);
+    const orderId = result?.orderID || result?.orderIds?.[0];
+    if (!orderId || orderId === "unknown") {
+      logger.error(`Buy order returned no valid orderId — order may not have been accepted`);
+      return { success: false, error: "No orderId returned from Polymarket" };
+    }
+
+    // Verify the order was actually filled
+    const fillResult = await waitForOrderFill(orderId, 8000, 500);
+
+    if (!fillResult.filled || fillResult.sizeFilled <= 0) {
+      logger.warn(`Buy order ${orderId} was NOT filled (status: ${fillResult.status}) — no trade recorded`);
+      return { success: false, error: `Order not filled (status: ${fillResult.status})`, orderId };
+    }
+
+    logger.info(
+      `Buy order FILLED: ${fillResult.sizeFilled.toFixed(4)} shares @ $${price} | ` +
+      `status=${fillResult.status} | token=${tokenId}`
+    );
     return {
       success: true,
-      orderId: result?.orderID || result?.orderIds?.[0] || "unknown",
+      orderId,
+      filledSize: fillResult.sizeFilled,
+      filledPrice: fillResult.avgPrice || price,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -156,6 +176,7 @@ export async function placeBuyOrder(
 
 /**
  * Place a sell order on Polymarket.
+ * Verifies fill status before returning success to prevent phantom trades.
  */
 export async function placeSellOrder(
   tokenId: string,
@@ -163,7 +184,7 @@ export async function placeSellOrder(
   size: number,
   tickSize: string,
   negRisk: boolean
-): Promise<{ success: boolean; orderId?: string; error?: string }> {
+): Promise<{ success: boolean; orderId?: string; error?: string; filledSize?: number; filledPrice?: number }> {
   const client = await getClobClient();
   if (!client) {
     return { success: false, error: "CLOB client not initialized" };
@@ -180,10 +201,29 @@ export async function placeSellOrder(
       expiration: undefined,
     }, { tickSize: tickSize as TickSize, negRisk });
 
-    logger.info(`Sell order placed: ${size} shares @ $${price} | token=${tokenId}`);
+    const orderId = result?.orderID || result?.orderIds?.[0];
+    if (!orderId || orderId === "unknown") {
+      logger.error(`Sell order returned no valid orderId — order may not have been accepted`);
+      return { success: false, error: "No orderId returned from Polymarket" };
+    }
+
+    // Verify the order was actually filled
+    const fillResult = await waitForOrderFill(orderId, 8000, 500);
+
+    if (!fillResult.filled || fillResult.sizeFilled <= 0) {
+      logger.warn(`Sell order ${orderId} was NOT filled (status: ${fillResult.status}) — no trade recorded`);
+      return { success: false, error: `Order not filled (status: ${fillResult.status})`, orderId };
+    }
+
+    logger.info(
+      `Sell order FILLED: ${fillResult.sizeFilled.toFixed(4)} shares @ $${price} | ` +
+      `status=${fillResult.status} | token=${tokenId}`
+    );
     return {
       success: true,
-      orderId: result?.orderID || result?.orderIds?.[0] || "unknown",
+      orderId,
+      filledSize: fillResult.sizeFilled,
+      filledPrice: fillResult.avgPrice || price,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -196,6 +236,8 @@ export async function placeSellOrder(
  * Place a limit buy order with GTC + postOnly (maker only, zero fees).
  * Used by the arbitrage strategy — order sits on the book waiting for takers.
  * If the order would immediately fill (cross the spread), it is REJECTED.
+ * Returns orderId for later fill checking — does NOT wait for fills since these
+ * are passive limit orders that may take time to fill.
  */
 export async function placeLimitBuyOrder(
   tokenId: string,
@@ -292,5 +334,175 @@ export async function getOrderBook(
   }
 }
 
+/**
+ * Check the status of an order. Returns fill information.
+ * Used to verify whether an order was actually filled after placement.
+ */
+export async function getOrderStatus(
+  orderId: string
+): Promise<{ filled: boolean; sizeFilled: number; sizeMatched: number; status: string; price: number } | null> {
+  const client = await getClobClient();
+  if (!client) return null;
+
+  try {
+    const order = await client.getOrder(orderId);
+    if (!order) return null;
+
+    const sizeFilled = parseFloat(order.size_matched || "0");
+    const originalSize = parseFloat(order.original_size || "0");
+    const price = parseFloat(order.price || "0");
+    const status = order.status || "unknown";
+
+    return {
+      filled: sizeFilled > 0,
+      sizeFilled,
+      sizeMatched: sizeFilled,
+      status,
+      price,
+    };
+  } catch (err) {
+    logger.error(`Failed to get order status for ${orderId}: ${err}`);
+    return null;
+  }
+}
+
+/**
+ * Poll order status until it settles (filled, cancelled, or timeout).
+ * Returns actual fill data. Polymarket market orders typically fill immediately,
+ * but we verify to prevent phantom trades.
+ */
+export async function waitForOrderFill(
+  orderId: string,
+  maxWaitMs: number = 5000,
+  pollIntervalMs: number = 500
+): Promise<{ filled: boolean; sizeFilled: number; avgPrice: number; status: string }> {
+  const start = Date.now();
+  let lastStatus: { filled: boolean; sizeFilled: number; sizeMatched: number; status: string; price: number } | null = null;
+
+  while (Date.now() - start < maxWaitMs) {
+    lastStatus = await getOrderStatus(orderId);
+    if (!lastStatus) {
+      // API error, wait and retry
+      await new Promise(r => setTimeout(r, pollIntervalMs));
+      continue;
+    }
+
+    // Terminal states: MATCHED (fully filled), CANCELLED, EXPIRED
+    const s = lastStatus.status.toUpperCase();
+    if (s === "MATCHED" || s === "CLOSED" || s === "FILLED") {
+      return {
+        filled: lastStatus.sizeFilled > 0,
+        sizeFilled: lastStatus.sizeFilled,
+        avgPrice: lastStatus.price,
+        status: lastStatus.status,
+      };
+    }
+    if (s === "CANCELLED" || s === "EXPIRED" || s === "REJECTED") {
+      return {
+        filled: false,
+        sizeFilled: 0,
+        avgPrice: 0,
+        status: lastStatus.status,
+      };
+    }
+
+    // Still LIVE/OPEN — partially filled is still possible
+    if (lastStatus.sizeFilled > 0) {
+      // Has partial fill, keep polling in case more fills come
+    }
+
+    await new Promise(r => setTimeout(r, pollIntervalMs));
+  }
+
+  // Timeout — return whatever we have
+  return {
+    filled: lastStatus ? lastStatus.sizeFilled > 0 : false,
+    sizeFilled: lastStatus?.sizeFilled || 0,
+    avgPrice: lastStatus?.price || 0,
+    status: lastStatus?.status || "timeout",
+  };
+}
+
 // Re-export useful types
 export { Side, OrderType };
+
+// ---- Polymarket contract addresses (Polygon mainnet) ----
+const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
+const NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296";
+const COLLATERAL_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+
+const CTF_ABI = [
+  "function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)",
+  "function balanceOf(address owner, uint256 id) view returns (uint256)",
+];
+
+const NEG_RISK_ABI = [
+  "function redeemPositions(bytes32 conditionId, uint256[] amounts)",
+];
+
+/**
+ * Redeem winning conditional tokens back to USDC after a market resolves.
+ * This is the on-chain "Claim Earnings" step.
+ */
+export async function redeemWinnings(
+  conditionId: string,
+  negRisk: boolean
+): Promise<{ success: boolean; error?: string }> {
+  const privateKey = process.env.PRIVATE_KEY;
+  if (!privateKey) {
+    return { success: false, error: "No PRIVATE_KEY" };
+  }
+
+  try {
+    const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
+    const provider = new StaticJsonRpcProvider(rpcUrl, 137);
+    const signer = new Wallet(privateKey, provider);
+    const { Contract } = await import("@ethersproject/contracts");
+
+    // Both outcomes: index 1 = YES (0b01), index 2 = NO (0b10)
+    const indexSets = [1, 2];
+
+    if (negRisk) {
+      // For neg-risk markets, use the NegRiskAdapter
+      const adapter = new Contract(NEG_RISK_ADAPTER, NEG_RISK_ABI, signer);
+
+      // Check if we have any tokens to redeem first
+      const ctf = new Contract(CTF_ADDRESS, CTF_ABI, provider);
+      // Token IDs are derived from conditionId + index
+      let hasTokens = false;
+      for (const idx of indexSets) {
+        try {
+          const tokenId = BigInt(conditionId) + BigInt(idx);
+          const bal = await ctf.balanceOf(signer.address, tokenId);
+          if (Number(bal) > 0) hasTokens = true;
+        } catch {
+          // Skip balance check, try redeem anyway
+          hasTokens = true;
+          break;
+        }
+      }
+
+      if (!hasTokens) {
+        logger.info(`[Redeem] No tokens to redeem for ${conditionId.slice(0, 10)}...`);
+        return { success: true };
+      }
+
+      const tx = await adapter.redeemPositions(conditionId, indexSets);
+      await tx.wait();
+      logger.info(`[Redeem] Neg-risk redemption tx: ${tx.hash}`);
+    } else {
+      // For regular markets, call CTF contract directly
+      const ctf = new Contract(CTF_ADDRESS, CTF_ABI, signer);
+      const parentCollectionId = "0x0000000000000000000000000000000000000000000000000000000000000000";
+      const tx = await ctf.redeemPositions(COLLATERAL_ADDRESS, parentCollectionId, conditionId, indexSets);
+      await tx.wait();
+      logger.info(`[Redeem] CTF redemption tx: ${tx.hash}`);
+    }
+
+    return { success: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`[Redeem] Failed for ${conditionId.slice(0, 10)}...: ${msg}`);
+    return { success: false, error: msg };
+  }
+}

@@ -70,23 +70,32 @@ export async function executeBuy(
     return { trade: null, error: result.error };
   }
 
+  // Use verified fill data instead of assumed values
+  const actualShares = result.filledSize ?? shares;
+  const actualPrice = result.filledPrice ?? price;
+  const actualAmount = actualShares * actualPrice;
+  const actualTakerFee = calculateTakerFee(actualShares, actualPrice);
+  const actualSlippage = options.expectedPrice
+    ? Math.abs(actualPrice - options.expectedPrice) / options.expectedPrice
+    : slippage;
+
   const trade = insertTrade({
     timestamp: new Date().toISOString(),
     conditionId: market.conditionId,
     slug: market.slug,
     side,
     action: "buy",
-    price,
-    amount: dollarAmount,
-    shares,
+    price: actualPrice,
+    amount: actualAmount,
+    shares: actualShares,
     pnl: null,
     paper: false,
     orderId: result.orderId || null,
     asset: options.asset || null,
     subStrategy: options.subStrategy || null,
     binancePriceAtEntry: null,
-    slippage,
-    takerFee,
+    slippage: actualSlippage,
+    takerFee: actualTakerFee,
   });
 
   return { trade };
@@ -149,23 +158,30 @@ export async function executeSell(
     return { trade: null, error: result.error };
   }
 
+  // Use verified fill data instead of assumed values
+  const actualShares = result.filledSize ?? position.shares;
+  const actualPrice = result.filledPrice ?? currentPrice;
+  const actualSellAmount = actualShares * actualPrice;
+  const actualPnl = actualSellAmount - position.costBasis;
+  const actualTakerFee = calculateTakerFee(actualShares, actualPrice);
+
   const trade = insertTrade({
     timestamp: new Date().toISOString(),
     conditionId: market.conditionId,
     slug: market.slug,
     side: position.side,
     action: "sell",
-    price: currentPrice,
-    amount: sellAmount,
-    shares: position.shares,
-    pnl,
+    price: actualPrice,
+    amount: actualSellAmount,
+    shares: actualShares,
+    pnl: actualPnl,
     paper: false,
     orderId: result.orderId || null,
     asset: options.asset || null,
     subStrategy: options.subStrategy || null,
     binancePriceAtEntry: null,
     slippage: null,
-    takerFee,
+    takerFee: actualTakerFee,
   });
 
   return { trade };

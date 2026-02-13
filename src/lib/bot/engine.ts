@@ -10,7 +10,7 @@ import { executeBuy, executeSell, recordResolution } from "./executor";
 import { arbTick, getArbState, getArbStats, setArbCallbacks, getArbCapitalDeployed } from "./arbitrage";
 import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount } from "../db/queries";
 import { startMarketScanner, stopMarketScanner, getActiveMarkets, getActiveMarketForAsset, getRecentOutcomes, markOutcomeResolved } from "../prices/market-scanner";
-import { getClobClient } from "../polymarket/client";
+import { getClobClient, redeemWinnings } from "../polymarket/client";
 import { Wallet } from "@ethersproject/wallet";
 import { StaticJsonRpcProvider } from "@ethersproject/providers";
 import { Contract } from "@ethersproject/contracts";
