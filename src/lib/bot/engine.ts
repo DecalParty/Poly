@@ -312,10 +312,13 @@ function refreshWalletBalance() {
     const usdcE = new Contract("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", erc20Abi, provider);
     const usdcNative = new Contract("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", erc20Abi, provider);
 
-    // Check balances at both EOA and funder address (proxy wallet)
-    const addresses = [wallet.address];
-    if (funderAddress && funderAddress.toLowerCase() !== wallet.address.toLowerCase()) {
+    // Check balances at proxy wallet (funder) first, then EOA
+    const addresses: string[] = [];
+    if (funderAddress) {
       addresses.push(funderAddress);
+    }
+    if (!funderAddress || funderAddress.toLowerCase() !== wallet.address.toLowerCase()) {
+      addresses.push(wallet.address);
     }
 
     Promise.all(
@@ -720,6 +723,23 @@ async function tradingLoop() {
       broadcastTrade(trade);
       broadcastLog(`${pos.asset} resolved ${resolvedSide === "yes" ? "UP" : "DOWN"} - ${won ? "WON" : "LOST"} | P&L: $${trade.pnl?.toFixed(4)}`);
       addAlert(won ? "success" : "warning", `${pos.asset} resolved ${resolvedSide === "yes" ? "UP" : "DOWN"}: ${won ? "WON" : "LOST"} ($${trade.pnl?.toFixed(4)})`, pos.asset);
+
+      // Auto-claim winnings on-chain (non-blocking)
+      if (!settings.paperTrading && won) {
+        redeemWinnings(cachedMarket.conditionId, cachedMarket.negRisk)
+          .then((res) => {
+            if (res.success) {
+              broadcastLog(`${pos.asset} winnings claimed on-chain`);
+              addAlert("success", `Claimed winnings for ${pos.asset}`, pos.asset);
+            } else {
+              broadcastLog(`${pos.asset} claim failed: ${res.error}`);
+              addAlert("warning", `Auto-claim failed for ${pos.asset}: ${res.error}`, pos.asset);
+            }
+          })
+          .catch((err) => {
+            logger.error(`[Redeem] Auto-claim error for ${pos.asset}: ${err}`);
+          });
+      }
     }
 
     // Update window positions with latest prices from scanner cache

@@ -124,6 +124,7 @@ export function getCumulativePnl(): number {
   const result = db
     .select({ total: sql<number>`COALESCE(SUM(pnl), 0)` })
     .from(schema.trades)
+    .where(eq(schema.trades.paper, false))
     .get();
   return result?.total ?? 0;
 }
@@ -132,6 +133,7 @@ export function getTotalTradeCount(): number {
   const result = db
     .select({ count: sql<number>`COUNT(*)` })
     .from(schema.trades)
+    .where(eq(schema.trades.paper, false))
     .get();
   return result?.count ?? 0;
 }
