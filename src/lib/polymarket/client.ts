@@ -162,7 +162,15 @@ export async function placeBuyOrder(
     const fillResult = await waitForOrderFill(orderId, 8000, 500);
 
     if (!fillResult.filled || fillResult.sizeFilled <= 0) {
-      logger.warn(`Buy order ${orderId} NOT filled (status: ${fillResult.status})`);
+      // Cancel the unfilled order so it doesn't fill later as a ghost trade
+      logger.warn(`Buy order ${orderId} NOT filled (status: ${fillResult.status}) — cancelling`);
+      try {
+        const clob = await getClobClient();
+        if (clob) await clob.cancelOrder({ orderID: orderId });
+        logger.info(`[LIVE] Cancelled unfilled buy order ${orderId}`);
+      } catch (cancelErr) {
+        logger.warn(`[LIVE] Failed to cancel unfilled buy order ${orderId}: ${cancelErr}`);
+      }
       return { success: false, error: `Order not filled (status: ${fillResult.status})`, orderId };
     }
 
@@ -227,7 +235,15 @@ export async function placeSellOrder(
     const fillResult = await waitForOrderFill(orderId, 8000, 500);
 
     if (!fillResult.filled || fillResult.sizeFilled <= 0) {
-      logger.warn(`Sell order ${orderId} NOT filled (status: ${fillResult.status})`);
+      // Cancel the unfilled order so it doesn't fill later as a ghost trade
+      logger.warn(`Sell order ${orderId} NOT filled (status: ${fillResult.status}) — cancelling`);
+      try {
+        const clob = await getClobClient();
+        if (clob) await clob.cancelOrder({ orderID: orderId });
+        logger.info(`[LIVE] Cancelled unfilled sell order ${orderId}`);
+      } catch (cancelErr) {
+        logger.warn(`[LIVE] Failed to cancel unfilled sell order ${orderId}: ${cancelErr}`);
+      }
       return { success: false, error: `Order not filled (status: ${fillResult.status})`, orderId };
     }
 
