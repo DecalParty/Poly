@@ -134,6 +134,7 @@ export async function placeBuyOrder(
   }
 
   try {
+    logger.info(`[FOK] Placing BUY: $${dollarAmount} on token=${tokenId.slice(0, 10)}...`);
     const result = await client.createAndPostMarketOrder({
       tokenID: tokenId,
       amount: dollarAmount,
@@ -142,33 +143,35 @@ export async function placeBuyOrder(
       nonce: undefined,
     }, { tickSize: tickSize as TickSize, negRisk }, OrderType.FOK);
 
+    logger.info(`[FOK] BUY response: ${JSON.stringify(result)}`);
+
     const orderId = result?.orderID || result?.orderIds?.[0];
     if (!orderId || orderId === "unknown") {
-      logger.error(`Buy FOK order returned no valid orderId — order may not have been accepted`);
+      logger.error(`Buy FOK returned no orderId — order not accepted`);
       return { success: false, error: "No orderId returned from Polymarket" };
     }
 
-    // Verify the order was actually filled
-    const fillResult = await waitForOrderFill(orderId, 8000, 500);
+    // FOK fills instantly — check direct response first, then getTrades, then getOrder
+    const fill = await verifyFokFill(client, orderId, tokenId, "BUY");
 
-    if (!fillResult.filled || fillResult.sizeFilled <= 0) {
-      logger.warn(`Buy FOK order ${orderId} was NOT filled (status: ${fillResult.status}) — no trade recorded`);
-      return { success: false, error: `Order not filled (status: ${fillResult.status})`, orderId };
+    if (!fill.filled) {
+      logger.warn(`Buy FOK ${orderId} — no fill confirmed (${fill.method}): ${fill.status}`);
+      return { success: false, error: `Order not filled (${fill.status})`, orderId };
     }
 
     logger.info(
-      `Buy FOK FILLED: ${fillResult.sizeFilled.toFixed(4)} shares | $${dollarAmount} spent | ` +
-      `status=${fillResult.status} | token=${tokenId}`
+      `Buy FOK FILLED: ${fill.sizeFilled.toFixed(4)} shares @ $${fill.avgPrice.toFixed(4)} | ` +
+      `verified via ${fill.method} | token=${tokenId.slice(0, 10)}...`
     );
     return {
       success: true,
       orderId,
-      filledSize: fillResult.sizeFilled,
-      filledPrice: fillResult.avgPrice || price,
+      filledSize: fill.sizeFilled,
+      filledPrice: fill.avgPrice || price,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`Buy FOK order failed: ${msg}`);
+    logger.error(`Buy FOK failed: ${msg}`);
     return { success: false, error: msg };
   }
 }
@@ -191,6 +194,7 @@ export async function placeSellOrder(
   }
 
   try {
+    logger.info(`[FOK] Placing SELL: ${shares.toFixed(4)} shares on token=${tokenId.slice(0, 10)}...`);
     const result = await client.createAndPostMarketOrder({
       tokenID: tokenId,
       amount: shares,
@@ -199,33 +203,35 @@ export async function placeSellOrder(
       nonce: undefined,
     }, { tickSize: tickSize as TickSize, negRisk }, OrderType.FOK);
 
+    logger.info(`[FOK] SELL response: ${JSON.stringify(result)}`);
+
     const orderId = result?.orderID || result?.orderIds?.[0];
     if (!orderId || orderId === "unknown") {
-      logger.error(`Sell FOK order returned no valid orderId — order may not have been accepted`);
+      logger.error(`Sell FOK returned no orderId — order not accepted`);
       return { success: false, error: "No orderId returned from Polymarket" };
     }
 
-    // Verify the order was actually filled
-    const fillResult = await waitForOrderFill(orderId, 8000, 500);
+    // FOK fills instantly — check direct response first, then getTrades, then getOrder
+    const fill = await verifyFokFill(client, orderId, tokenId, "SELL");
 
-    if (!fillResult.filled || fillResult.sizeFilled <= 0) {
-      logger.warn(`Sell FOK order ${orderId} was NOT filled (status: ${fillResult.status}) — no trade recorded`);
-      return { success: false, error: `Order not filled (status: ${fillResult.status})`, orderId };
+    if (!fill.filled) {
+      logger.warn(`Sell FOK ${orderId} — no fill confirmed (${fill.method}): ${fill.status}`);
+      return { success: false, error: `Order not filled (${fill.status})`, orderId };
     }
 
     logger.info(
-      `Sell FOK FILLED: ${fillResult.sizeFilled.toFixed(4)} shares @ $${fillResult.avgPrice} | ` +
-      `status=${fillResult.status} | token=${tokenId}`
+      `Sell FOK FILLED: ${fill.sizeFilled.toFixed(4)} shares @ $${fill.avgPrice.toFixed(4)} | ` +
+      `verified via ${fill.method} | token=${tokenId.slice(0, 10)}...`
     );
     return {
       success: true,
       orderId,
-      filledSize: fillResult.sizeFilled,
-      filledPrice: fillResult.avgPrice || price,
+      filledSize: fill.sizeFilled,
+      filledPrice: fill.avgPrice || price,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`Sell FOK order failed: ${msg}`);
+    logger.error(`Sell FOK failed: ${msg}`);
     return { success: false, error: msg };
   }
 }
@@ -418,6 +424,120 @@ export async function waitForOrderFill(
     sizeFilled: lastStatus?.sizeFilled || 0,
     avgPrice: lastStatus?.price || 0,
     status: lastStatus?.status || "timeout",
+  };
+}
+
+/**
+ * Verify a FOK order fill using multiple methods.
+ * FOK orders fill instantly and may no longer appear as "open" orders,
+ * so getOrder() can fail. We try multiple approaches:
+ * 1. getTrades() — find matching fills by taker_order_id or asset
+ * 2. getOrder() — works if the API still tracks completed orders
+ */
+async function verifyFokFill(
+  client: ClobClient,
+  orderId: string,
+  tokenId: string,
+  side: string,
+): Promise<{ filled: boolean; sizeFilled: number; avgPrice: number; status: string; method: string }> {
+  // Small delay to let the API settle after instant fill
+  await new Promise(r => setTimeout(r, 300));
+
+  // Method 1: Try getTrades to find fills for this asset
+  try {
+    const trades = await client.getTrades({ asset_id: tokenId }, true);
+    if (trades && trades.length > 0) {
+      // Look for a trade matching our order ID
+      const matchingTrade = trades.find(
+        (t: any) => t.taker_order_id === orderId || t.order_id === orderId
+      );
+      if (matchingTrade) {
+        const size = parseFloat(matchingTrade.size || "0");
+        const price = parseFloat(matchingTrade.price || "0");
+        if (size > 0) {
+          return {
+            filled: true,
+            sizeFilled: size,
+            avgPrice: price,
+            status: "MATCHED",
+            method: "getTrades",
+          };
+        }
+      }
+
+      // If no exact match but recent trades exist for this token,
+      // check the most recent one (FOK fills are the latest)
+      const recent = trades[0];
+      const tradeTime = recent.match_time
+        ? new Date(recent.match_time).getTime()
+        : 0;
+      const now = Date.now();
+      // If the most recent trade is within 5 seconds, it's likely ours
+      if (now - tradeTime < 5000) {
+        const size = parseFloat(recent.size || "0");
+        const price = parseFloat(recent.price || "0");
+        if (size > 0 && recent.trader_side === "TAKER") {
+          logger.info(`[FOK] Matched recent taker trade: ${size} shares @ $${price} (${now - tradeTime}ms ago)`);
+          return {
+            filled: true,
+            sizeFilled: size,
+            avgPrice: price,
+            status: "MATCHED",
+            method: "getTrades-recent",
+          };
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn(`[FOK] getTrades lookup failed: ${err}`);
+  }
+
+  // Method 2: Try getOrder (works for GTC, may work for FOK on some endpoints)
+  try {
+    const order = await client.getOrder(orderId);
+    if (order) {
+      const sizeFilled = parseFloat(order.size_matched || "0");
+      const price = parseFloat(order.price || "0");
+      const status = (order.status || "").toUpperCase();
+      logger.info(`[FOK] getOrder result: status=${status} matched=${sizeFilled} price=${price}`);
+
+      if (sizeFilled > 0) {
+        return {
+          filled: true,
+          sizeFilled,
+          avgPrice: price,
+          status: order.status,
+          method: "getOrder",
+        };
+      }
+      if (status === "MATCHED" || status === "CLOSED" || status === "FILLED") {
+        // Status says matched but size_matched is 0? Trust the status
+        return {
+          filled: true,
+          sizeFilled: sizeFilled || 0,
+          avgPrice: price,
+          status: order.status,
+          method: "getOrder-status",
+        };
+      }
+      return {
+        filled: false,
+        sizeFilled: 0,
+        avgPrice: 0,
+        status: order.status || "unknown",
+        method: "getOrder",
+      };
+    }
+  } catch (err) {
+    logger.warn(`[FOK] getOrder lookup failed for ${orderId}: ${err}`);
+  }
+
+  return {
+    filled: false,
+    sizeFilled: 0,
+    avgPrice: 0,
+    status: "unverifiable",
+    method: "none",
   };
 }
 
