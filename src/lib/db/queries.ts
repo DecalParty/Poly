@@ -364,6 +364,7 @@ export function getSettings(): BotSettings {
     scalpEntryMin: (row as any).scalpEntryMin ?? 0.15,
     scalpEntryMax: (row as any).scalpEntryMax ?? 0.85,
     scalpCooldownWindows: (row as any).scalpCooldownWindows ?? 1,
+    scalpExitWindow: (row as any).scalpExitWindow ?? 120,
   };
 }
 
@@ -401,6 +402,7 @@ export function updateSettings(s: Partial<BotSettings>): BotSettings {
   if (s.scalpEntryMin !== undefined) setObj.scalpEntryMin = s.scalpEntryMin;
   if (s.scalpEntryMax !== undefined) setObj.scalpEntryMax = s.scalpEntryMax;
   if (s.scalpCooldownWindows !== undefined) setObj.scalpCooldownWindows = s.scalpCooldownWindows;
+  if (s.scalpExitWindow !== undefined) setObj.scalpExitWindow = s.scalpExitWindow;
 
   if (Object.keys(setObj).length > 0) {
     db.update(schema.settings)

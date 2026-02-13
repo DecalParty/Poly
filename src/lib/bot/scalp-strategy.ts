@@ -99,8 +99,8 @@ export function evaluateScalpEntry(
   // Need a significant move
   if (Math.abs(btcDelta) < spikeThreshold) return null;
 
-  // Don't enter in last 2 minutes (handled by engine but double-check)
-  if (secondsRemaining < 120) return null;
+  // Don't enter too close to window end
+  if (secondsRemaining < 180) return null;
 
   if (btcDelta > 0) {
     // BTC went UP -> buy YES (UP shares will increase)
@@ -152,7 +152,7 @@ export function evaluateScalpExit(
   positionSide: "yes" | "no",
   secondsRemaining: number,
   profitTarget: number,
-  btcVelocity: number = 0,
+  exitWindowSecs: number = 120,
 ): ScalpExitSignal {
   const pnl = currentPrice - entryPrice;
 
@@ -174,8 +174,8 @@ export function evaluateScalpExit(
     };
   }
 
-  // Time exit: 2 minutes before window end
-  if (secondsRemaining <= 120) {
+  // Time exit: configurable seconds before window end
+  if (secondsRemaining <= exitWindowSecs) {
     if (pnl > 0) {
       return {
         action: "sell_profit",

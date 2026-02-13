@@ -726,13 +726,12 @@ async function tradingLoop() {
       }
 
       // Evaluate exit signal
-      const exitVelocity = getBtcVelocity(60_000);
       const exitSignal = evaluateScalpExit(
-        pos.entryPrice, pos.sellPrice, currentPrice, btcChange, pos.side, secsRemaining, settings.scalpProfitTarget, exitVelocity
+        pos.entryPrice, pos.sellPrice, currentPrice, btcChange, pos.side, secsRemaining, settings.scalpProfitTarget, settings.scalpExitWindow
       );
 
       if (exitSignal.action === "trail" && exitSignal.sellPrice && exitSignal.sellPrice > pos.sellPrice) {
-        // Cancel old sell, place new one higher
+        // Trail sell up (kept for compatibility)
         if (pos.sellOrderId && !settings.paperTrading) {
           try { await cancelOrder(pos.sellOrderId); } catch {}
         }
@@ -744,8 +743,7 @@ async function tradingLoop() {
         }
         pos.sellPrice = newSellPrice;
         pos.sellOrderId = newSellOrderId;
-        const trailFair = computeFairValue(btcChange, secsRemaining, exitVelocity);
-        broadcastLog(`Trail sell: ${pos.side.toUpperCase()} $${pos.sellPrice.toFixed(2)} (fair $${(pos.side === "yes" ? trailFair.up : trailFair.down).toFixed(2)})`);
+        broadcastLog(`Trail sell: ${pos.side.toUpperCase()} $${pos.sellPrice.toFixed(2)}`);
       } else if (exitSignal.action === "sell_profit" || exitSignal.action === "sell_loss") {
         // Time-based exit: cancel limit sell, place market sell
         if (pos.sellOrderId && !settings.paperTrading) {

@@ -58,6 +58,7 @@ export default function SettingsPanel({ settings, botStatus, onSave, circuitBrea
           <NF label="Entry Min" value={f.scalpEntryMin ?? 0.15} field="scalpEntryMin" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
           <NF label="Entry Max" value={f.scalpEntryMax ?? 0.85} field="scalpEntryMax" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
           <NF label="Loss Cooldown" value={f.scalpCooldownWindows ?? 1} field="scalpCooldownWindows" onChange={handleNumChange} disabled={disabled} suffix="win" step="1" />
+          <NF label="Exit Window" value={f.scalpExitWindow ?? 120} field="scalpExitWindow" onChange={handleNumChange} disabled={disabled} suffix="sec" step="10" />
         </div>
         <div className="rounded-xl bg-white/[0.015] border border-white/[0.04] p-3">
           <p className="text-[10px] text-gray-500 font-semibold mb-1">How it works</p>

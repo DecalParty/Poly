@@ -62,6 +62,7 @@ export interface BotSettings {
   scalpEntryMin: number;
   scalpEntryMax: number;
   scalpCooldownWindows: number;
+  scalpExitWindow: number;
 }
 
 export const DEFAULT_SETTINGS: BotSettings = {
@@ -105,6 +106,7 @@ export const DEFAULT_SETTINGS: BotSettings = {
   scalpEntryMin: 0.40,
   scalpEntryMax: 0.70,
   scalpCooldownWindows: 1,
+  scalpExitWindow: 120,
 };
 
 // ------ Market Data --------------------------------------------------------------------------------------------------------------------------
