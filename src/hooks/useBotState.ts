@@ -13,6 +13,7 @@ import type {
   WindowOutcome,
   ArbWindowState,
   ArbStats,
+  ScalpData,
 } from "@/types";
 import { DEFAULT_SETTINGS } from "@/types";
 
@@ -57,6 +58,15 @@ const DEFAULT_STATE: BotState = {
     totalPnl: 0,
     avgProfitPerWindow: 0,
   },
+  scalp: {
+    binancePrice: 0,
+    windowOpenPrice: 0,
+    btcChangePercent: 0,
+    fairValue: { up: 0.5, down: 0.5 },
+    positions: [],
+    pendingBuys: [],
+    cooldownUntil: 0,
+  },
 };
 
 export function useBotState() {
@@ -68,6 +78,7 @@ export function useBotState() {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [recentOutcomes, setRecentOutcomes] = useState<WindowOutcome[]>([]);
+  const [scalpData, setScalpData] = useState<ScalpData | null>(null);
   const [sseConnected, setSseConnected] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -139,6 +150,7 @@ export function useBotState() {
               const pricePayload = event.data as {
                 markets: Record<string, ActiveMarketState>;
                 recentOutcomes?: WindowOutcome[];
+                scalp?: ScalpData;
               };
               setState((prev) => ({
                 ...prev,
@@ -146,6 +158,9 @@ export function useBotState() {
                   ? { ...prev.activeMarkets, ...pricePayload.markets }
                   : prev.activeMarkets,
               }));
+              if (pricePayload.scalp) {
+                setScalpData(pricePayload.scalp);
+              }
               if (pricePayload.recentOutcomes) {
                 setRecentOutcomes((prev) => {
                   // Only update if data actually changed to avoid unnecessary re-renders
@@ -262,6 +277,7 @@ export function useBotState() {
     alerts,
     logs,
     recentOutcomes,
+    scalpData,
     sseConnected,
     startBot,
     stopBot,

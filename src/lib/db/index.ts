@@ -265,6 +265,16 @@ export function ensureDb(): Promise<void> {
     addColIfMissing("settings", "arb_cancel_before_end", "INTEGER NOT NULL DEFAULT 120");
     addColIfMissing("settings", "arb_market", "TEXT NOT NULL DEFAULT 'BTC'");
 
+    // Scalp strategy columns
+    addColIfMissing("settings", "scalp_enabled", "INTEGER NOT NULL DEFAULT 1");
+    addColIfMissing("settings", "scalp_trade_size", "REAL NOT NULL DEFAULT 12");
+    addColIfMissing("settings", "scalp_max_positions", "INTEGER NOT NULL DEFAULT 2");
+    addColIfMissing("settings", "scalp_min_gap", "REAL NOT NULL DEFAULT 0.08");
+    addColIfMissing("settings", "scalp_profit_target", "REAL NOT NULL DEFAULT 0.07");
+    addColIfMissing("settings", "scalp_entry_min", "REAL NOT NULL DEFAULT 0.40");
+    addColIfMissing("settings", "scalp_entry_max", "REAL NOT NULL DEFAULT 0.70");
+    addColIfMissing("settings", "scalp_cooldown_windows", "INTEGER NOT NULL DEFAULT 1");
+
     sqlJsDb.run("INSERT OR IGNORE INTO settings (id) VALUES (1)");
     persist();
   })();

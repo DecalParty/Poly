@@ -1,6 +1,6 @@
 import { sqliteTable, text, integer, real, primaryKey } from "drizzle-orm/sqlite-core";
 
-// Trade history table — every buy, sell, and resolution event
+// Trade history table -- every buy, sell, and resolution event
 export const trades = sqliteTable("trades", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   timestamp: text("timestamp").notNull(),
@@ -67,6 +67,15 @@ export const settings = sqliteTable("settings", {
   maxCombinedCost: real("max_combined_cost").notNull().default(0.97),
   arbCancelBeforeEnd: integer("arb_cancel_before_end").notNull().default(120),
   arbMarket: text("arb_market").notNull().default("BTC"),
+  // Scalp strategy
+  scalpEnabled: integer("scalp_enabled", { mode: "boolean" }).notNull().default(true),
+  scalpTradeSize: real("scalp_trade_size").notNull().default(12),
+  scalpMaxPositions: integer("scalp_max_positions").notNull().default(2),
+  scalpMinGap: real("scalp_min_gap").notNull().default(0.08),
+  scalpProfitTarget: real("scalp_profit_target").notNull().default(0.07),
+  scalpEntryMin: real("scalp_entry_min").notNull().default(0.40),
+  scalpEntryMax: real("scalp_entry_max").notNull().default(0.70),
+  scalpCooldownWindows: integer("scalp_cooldown_windows").notNull().default(1),
   // Bet sizing
   betAmount: real("bet_amount").notNull().default(2.00),
 });

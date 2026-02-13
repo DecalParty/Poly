@@ -306,6 +306,45 @@ export async function placeLimitBuyOrder(
 }
 
 /**
+ * Place a limit sell order with GTC (maker only, zero fees).
+ * Used by the scalp strategy to exit positions at a target price.
+ */
+export async function placeLimitSellOrder(
+  tokenId: string,
+  price: number,
+  size: number,
+  tickSize: string,
+  negRisk: boolean
+): Promise<{ success: boolean; orderId?: string; error?: string }> {
+  const client = await getClobClient();
+  if (!client) {
+    return { success: false, error: "CLOB client not initialized" };
+  }
+
+  try {
+    const result = await client.createAndPostOrder({
+      tokenID: tokenId,
+      price,
+      side: Side.SELL,
+      size,
+      feeRateBps: undefined,
+      nonce: undefined,
+      expiration: undefined,
+    }, { tickSize: tickSize as TickSize, negRisk }, OrderType.GTC);
+
+    logger.info(`[SCALP] Limit sell placed: ${size.toFixed(2)} shares @ $${price} | token=${tokenId.slice(0, 10)}...`);
+    return {
+      success: true,
+      orderId: result?.orderID || result?.orderIds?.[0] || "unknown",
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`[SCALP] Limit sell failed: ${msg}`);
+    return { success: false, error: msg };
+  }
+}
+
+/**
  * Cancel an open order by ID.
  */
 export async function cancelOrder(

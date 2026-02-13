@@ -13,7 +13,7 @@ import type {
 } from "@/types";
 import { DEFAULT_SETTINGS } from "@/types";
 
-// ─── Trades ──────────────────────────────────────────────────────────────────
+// ------ Trades ------------------------------------------------------------------------------------------------------------------------------------
 
 function mapTradeRow(r: typeof schema.trades.$inferSelect): TradeRecord {
   return {
@@ -212,7 +212,7 @@ export function getConsecutiveWins(): number {
   return count;
 }
 
-// ─── Analytics ───────────────────────────────────────────────────────────────
+// ------ Analytics ------------------------------------------------------------------------------------------------------------------------------
 
 export function getPerformanceByAsset(days = 30): AssetPerformance[] {
   const since = new Date(Date.now() - days * 86400000).toISOString();
@@ -306,7 +306,7 @@ export function getAverageSlippage(): number {
   return result?.avg ?? 0;
 }
 
-// ─── Settings ────────────────────────────────────────────────────────────────
+// ------ Settings --------------------------------------------------------------------------------------------------------------------------------
 
 export function getSettings(): BotSettings {
   const row = db.select().from(schema.settings).where(eq(schema.settings.id, 1)).get();
@@ -356,6 +356,14 @@ export function getSettings(): BotSettings {
     arbMaxCombinedCost: row.maxCombinedCost,
     arbCancelBeforeEnd: row.arbCancelBeforeEnd,
     arbMarket: (row.arbMarket as MarketAsset) || "BTC",
+    scalpEnabled: (row as any).scalpEnabled ?? true,
+    scalpTradeSize: (row as any).scalpTradeSize ?? 12,
+    scalpMaxPositions: (row as any).scalpMaxPositions ?? 2,
+    scalpMinGap: (row as any).scalpMinGap ?? 0.08,
+    scalpProfitTarget: (row as any).scalpProfitTarget ?? 0.07,
+    scalpEntryMin: (row as any).scalpEntryMin ?? 0.40,
+    scalpEntryMax: (row as any).scalpEntryMax ?? 0.70,
+    scalpCooldownWindows: (row as any).scalpCooldownWindows ?? 1,
   };
 }
 
@@ -385,6 +393,14 @@ export function updateSettings(s: Partial<BotSettings>): BotSettings {
   if (s.arbMaxCombinedCost !== undefined) setObj.maxCombinedCost = s.arbMaxCombinedCost;
   if (s.arbCancelBeforeEnd !== undefined) setObj.arbCancelBeforeEnd = s.arbCancelBeforeEnd;
   if (s.arbMarket !== undefined) setObj.arbMarket = s.arbMarket;
+  if (s.scalpEnabled !== undefined) setObj.scalpEnabled = s.scalpEnabled;
+  if (s.scalpTradeSize !== undefined) setObj.scalpTradeSize = s.scalpTradeSize;
+  if (s.scalpMaxPositions !== undefined) setObj.scalpMaxPositions = s.scalpMaxPositions;
+  if (s.scalpMinGap !== undefined) setObj.scalpMinGap = s.scalpMinGap;
+  if (s.scalpProfitTarget !== undefined) setObj.scalpProfitTarget = s.scalpProfitTarget;
+  if (s.scalpEntryMin !== undefined) setObj.scalpEntryMin = s.scalpEntryMin;
+  if (s.scalpEntryMax !== undefined) setObj.scalpEntryMax = s.scalpEntryMax;
+  if (s.scalpCooldownWindows !== undefined) setObj.scalpCooldownWindows = s.scalpCooldownWindows;
 
   if (Object.keys(setObj).length > 0) {
     db.update(schema.settings)

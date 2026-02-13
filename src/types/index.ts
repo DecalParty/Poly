@@ -1,4 +1,4 @@
-// ─── Asset Types ─────────────────────────────────────────────────────────────
+// ------ Asset Types --------------------------------------------------------------------------------------------------------------------------
 
 export type MarketAsset = "BTC" | "ETH" | "SOL" | "XRP";
 
@@ -11,9 +11,9 @@ export const ASSET_COLORS: Record<MarketAsset, string> = {
   XRP: "#23292F",
 };
 
-// ─── Bot Settings ────────────────────────────────────────────────────────────
+// ------ Bot Settings ------------------------------------------------------------------------------------------------------------------------
 
-export type SubStrategy = "highConfidence" | "arbitrage";
+export type SubStrategy = "highConfidence" | "arbitrage" | "scalp";
 
 export interface LadderLevel {
   price: number;
@@ -43,7 +43,7 @@ export interface BotSettings {
   highConfBuyAmount: number;
   highConfBuyInterval: number;
 
-  // Arbitrage strategy
+  // Arbitrage strategy (legacy)
   arbEnabled: boolean;
   arbMaxPerWindow: number;
   arbBudgetUp: number | null;
@@ -52,6 +52,16 @@ export interface BotSettings {
   arbMaxCombinedCost: number;
   arbCancelBeforeEnd: number;
   arbMarket: MarketAsset;
+
+  // Scalp strategy
+  scalpEnabled: boolean;
+  scalpTradeSize: number;
+  scalpMaxPositions: number;
+  scalpMinGap: number;
+  scalpProfitTarget: number;
+  scalpEntryMin: number;
+  scalpEntryMax: number;
+  scalpCooldownWindows: number;
 }
 
 export const DEFAULT_SETTINGS: BotSettings = {
@@ -59,8 +69,8 @@ export const DEFAULT_SETTINGS: BotSettings = {
 
   totalBankroll: 50,
   maxTotalExposure: 30,
-  perWindowMax: 8,
-  maxSimultaneousPositions: 3,
+  perWindowMax: 12,
+  maxSimultaneousPositions: 2,
   dailyLossLimit: 10,
   lossLimit: 5,
 
@@ -70,11 +80,11 @@ export const DEFAULT_SETTINGS: BotSettings = {
   highConfEntryMax: 0.95,
   highConfTimeMin: 30,
   highConfTimeMax: 480,
-  highConfEnabled: true,
+  highConfEnabled: false,
   highConfBuyAmount: 0.10,
   highConfBuyInterval: 5,
 
-  arbEnabled: true,
+  arbEnabled: false,
   arbMaxPerWindow: 10,
   arbBudgetUp: null,
   arbBudgetDown: null,
@@ -86,9 +96,18 @@ export const DEFAULT_SETTINGS: BotSettings = {
   arbMaxCombinedCost: 0.97,
   arbCancelBeforeEnd: 120,
   arbMarket: "BTC",
+
+  scalpEnabled: true,
+  scalpTradeSize: 12,
+  scalpMaxPositions: 2,
+  scalpMinGap: 0.08,
+  scalpProfitTarget: 0.07,
+  scalpEntryMin: 0.40,
+  scalpEntryMax: 0.70,
+  scalpCooldownWindows: 1,
 };
 
-// ─── Market Data ─────────────────────────────────────────────────────────────
+// ------ Market Data --------------------------------------------------------------------------------------------------------------------------
 
 export interface MarketInfo {
   conditionId: string;
@@ -120,7 +139,7 @@ export interface MarketStatus {
   ineligibleReason?: string;
 }
 
-// ─── Price Intelligence ──────────────────────────────────────────────────────
+// ------ Price Intelligence ------------------------------------------------------------------------------------------------------------
 
 export interface WindowOutcome {
   slug: string;
@@ -144,7 +163,48 @@ export interface ActiveMarketState {
   negRisk: boolean;
 }
 
-// ─── Arbitrage State ─────────────────────────────────────────────────────────
+// ------ Scalp State --------------------------------------------------------------------------------------------------------------------------
+
+export interface ScalpPositionState {
+  id: string;
+  conditionId: string;
+  slug: string;
+  asset: MarketAsset;
+  side: "yes" | "no";
+  entryPrice: number;
+  shares: number;
+  costBasis: number;
+  currentPrice: number;
+  sellPrice: number;
+  sellOrderId: string | null;
+  buyOrderId: string;
+  entryTime: number;
+  windowEndTs: number;
+  unrealizedPnl: number;
+}
+
+export interface PendingBuyState {
+  orderId: string;
+  conditionId: string;
+  slug: string;
+  asset: MarketAsset;
+  side: "yes" | "no";
+  price: number;
+  size: number;
+  placedAt: number;
+}
+
+export interface ScalpData {
+  binancePrice: number;
+  windowOpenPrice: number;
+  btcChangePercent: number;
+  fairValue: { up: number; down: number };
+  positions: ScalpPositionState[];
+  pendingBuys: PendingBuyState[];
+  cooldownUntil: number;
+}
+
+// ------ Arbitrage State ------------------------------------------------------------------------------------------------------------------
 
 export interface ArbLadderOrder {
   side: "yes" | "no";
@@ -188,7 +248,7 @@ export interface ArbStats {
   avgProfitPerWindow: number;
 }
 
-// ─── Positions ───────────────────────────────────────────────────────────────
+// ------ Positions ------------------------------------------------------------------------------------------------------------------------------
 
 export interface Position {
   conditionId: string;
@@ -219,7 +279,7 @@ side: "yes" | "no";
   lastBuyTime?: number;
 }
 
-// ─── Trades ──────────────────────────────────────────────────────────────────
+// ------ Trades ------------------------------------------------------------------------------------------------------------------------------------
 
 export type TradeAction = "buy" | "sell" | "resolution";
 
@@ -243,7 +303,7 @@ export interface TradeRecord {
   takerFee: number | null;
 }
 
-// ─── Bot State ───────────────────────────────────────────────────────────────
+// ------ Bot State ------------------------------------------------------------------------------------------------------------------------------
 
 export type BotStatus = "stopped" | "running" | "error" | "paused";
 export type ConnectionStatus = "connected" | "disconnected" | "connecting";
@@ -287,9 +347,10 @@ export interface BotState {
   arbStats: ArbStats;
   walletBalance: number | null;
   walletAddress: string | null;
+  scalp: ScalpData;
 }
 
-// ─── SSE Events ──────────────────────────────────────────────────────────────
+// ------ SSE Events ----------------------------------------------------------------------------------------------------------------------------
 
 export type SSEEventType =
   | "state"
@@ -307,7 +368,7 @@ export interface SSEEvent {
   timestamp: string;
 }
 
-// ─── Alerts ──────────────────────────────────────────────────────────────────
+// ------ Alerts ------------------------------------------------------------------------------------------------------------------------------------
 
 export type AlertSeverity = "info" | "success" | "warning" | "error";
 
@@ -319,7 +380,7 @@ export interface AlertItem {
   asset?: MarketAsset;
 }
 
-// ─── API Responses ───────────────────────────────────────────────────────────
+// ------ API Responses ----------------------------------------------------------------------------------------------------------------------
 
 export interface ApiResponse<T = unknown> {
   success: boolean;
@@ -327,7 +388,7 @@ export interface ApiResponse<T = unknown> {
   error?: string;
 }
 
-// ─── P&L Chart Data ──────────────────────────────────────────────────────────
+// ------ P&L Chart Data --------------------------------------------------------------------------------------------------------------------
 
 export interface PnlDataPoint {
   timestamp: string;
@@ -343,7 +404,7 @@ export interface DailyPnlPoint {
   losses: number;
 }
 
-// ─── Stats / Analytics ──────────────────────────────────────────────────────
+// ------ Stats / Analytics ------------------------------------------------------------------------------------------------------------
 
 export interface AssetPerformance {
   asset: MarketAsset;
