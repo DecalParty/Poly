@@ -8,7 +8,7 @@ import {
 import { evaluateStrategy } from "./strategy";
 import { executeBuy, executeSell, recordResolution } from "./executor";
 import { arbTick, getArbState, getArbStats, setArbCallbacks, getArbCapitalDeployed } from "./arbitrage";
-import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount } from "../db/queries";
+import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount, getRecentWinningResolutions } from "../db/queries";
 import { startMarketScanner, stopMarketScanner, getActiveMarkets, getActiveMarketForAsset, getRecentOutcomes, markOutcomeResolved } from "../prices/market-scanner";
 import { getClobClient, redeemWinnings } from "../polymarket/client";
 import { Wallet } from "@ethersproject/wallet";
@@ -847,6 +847,32 @@ export async function startBot(): Promise<{ success: boolean; error?: string }> 
   } else {
     clobReady = false;
     addAlert("info", "Paper mode - CLOB client not needed");
+  }
+
+  // Scan for unclaimed winnings from recent trades and queue them
+  if (!settings.paperTrading) {
+    try {
+      const recentWins = getRecentWinningResolutions(4); // Last 4 hours
+      if (recentWins.length > 0) {
+        logger.info(`[Redeem] Found ${recentWins.length} recent winning trade(s) to check for unclaimed tokens`);
+        for (const win of recentWins) {
+          // Check if already queued
+          const alreadyQueued = pendingClaims.some(c => c.conditionId === win.conditionId);
+          if (!alreadyQueued) {
+            pendingClaims.push({
+              conditionId: win.conditionId,
+              negRisk: true, // All 15-min up/down markets are neg-risk
+              asset: win.asset,
+              attempts: 0,
+              nextAttempt: Date.now() + 3000,
+            });
+          }
+        }
+        broadcastLog(`Queued ${recentWins.length} recent win(s) for auto-claim`);
+      }
+    } catch (err) {
+      logger.error(`[Redeem] Startup claim scan failed: ${err}`);
+    }
   }
 
   // Initial market fetch
