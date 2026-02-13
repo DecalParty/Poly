@@ -570,6 +570,7 @@ const CTF_ABI = [
 
 const NEG_RISK_ABI = [
   "function redeemPositions(bytes32 conditionId, uint256[] indexSets)",
+  "function balanceOf(address owner, uint256 id) view returns (uint256)",
 ];
 
 const GNOSIS_SAFE_ABI = [
@@ -630,7 +631,7 @@ async function isConditionResolvedOnChain(conditionId: string): Promise<boolean>
 
 /**
  * Use CLOB API getTrades() to find positions with tokens still at the proxy wallet.
- * Checks balanceOf using the actual token IDs from trades (no derivation).
+ * Checks balanceOf on BOTH CTF and NegRiskAdapter since negRisk tokens live on the adapter.
  */
 export async function getClaimablePositions(): Promise<{
   conditionId: string;
@@ -638,9 +639,13 @@ export async function getClaimablePositions(): Promise<{
 }[]> {
   const client = await getClobClient();
   const funderAddress = process.env.FUNDER_ADDRESS;
-  if (!client || !funderAddress) return [];
+  if (!client || !funderAddress) {
+    logger.warn(`[Redeem] No CLOB client or FUNDER_ADDRESS`);
+    return [];
+  }
 
   try {
+    logger.info(`[Redeem] Fetching trades from CLOB API...`);
     const trades = await client.getTrades(undefined, false);
     if (!trades || trades.length === 0) {
       logger.info(`[Redeem] CLOB API returned 0 trades`);
@@ -650,8 +655,9 @@ export async function getClaimablePositions(): Promise<{
     const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
     const provider = new StaticJsonRpcProvider(rpcUrl, 137);
     const ctf = new Contract(CTF_ADDRESS, CTF_ABI, provider);
+    const negRiskAdapter = new Contract(NEG_RISK_ADAPTER, NEG_RISK_ABI, provider);
 
-    // Group by conditionId, collect all token IDs per market
+    // Collect unique token IDs per conditionId
     const marketTokens = new Map<string, Set<string>>();
     for (const t of trades) {
       if (!t.market || !t.asset_id) continue;
@@ -659,25 +665,32 @@ export async function getClaimablePositions(): Promise<{
       marketTokens.get(t.market)!.add(t.asset_id);
     }
 
-    logger.info(`[Redeem] CLOB API: ${trades.length} trades across ${marketTokens.size} markets`);
+    logger.info(`[Redeem] ${trades.length} trades across ${marketTokens.size} markets, checking balances for ${funderAddress}`);
 
     const claimable: { conditionId: string; negRisk: boolean }[] = [];
-    const seen = new Set<string>();
+    const found = new Set<string>();
 
     for (const [conditionId, tokenIds] of marketTokens) {
+      if (found.has(conditionId)) continue;
       for (const tokenId of tokenIds) {
         try {
-          const bal = await ctf.balanceOf(funderAddress, tokenId);
-          if (Number(bal) > 0) {
-            logger.info(`[Redeem] Found ${bal.toString()} tokens for ${conditionId.slice(0, 10)}... tokenId=${tokenId.slice(0, 10)}...`);
-            if (!seen.has(conditionId)) {
-              seen.add(conditionId);
-              const negRisk = await client.getNegRisk(tokenId).catch(() => true);
-              claimable.push({ conditionId, negRisk: !!negRisk });
-            }
+          // Check CTF (non-negRisk tokens)
+          const ctfBal = await ctf.balanceOf(funderAddress, tokenId).catch(() => 0);
+          // Check NegRiskAdapter (negRisk tokens)
+          const nrBal = await negRiskAdapter.balanceOf(funderAddress, tokenId).catch(() => 0);
+
+          const ctfNum = Number(ctfBal);
+          const nrNum = Number(nrBal);
+
+          if (ctfNum > 0 || nrNum > 0) {
+            const isNegRisk = nrNum > 0;
+            logger.info(`[Redeem] HAS TOKENS: conditionId=${conditionId.slice(0, 10)}... token=${tokenId.slice(0, 10)}... ctf=${ctfNum} negRisk=${nrNum}`);
+            found.add(conditionId);
+            claimable.push({ conditionId, negRisk: isNegRisk });
+            break; // found for this market, move on
           }
         } catch (err) {
-          logger.debug(`[Redeem] balanceOf failed for token ${tokenId.slice(0, 10)}...: ${err}`);
+          logger.debug(`[Redeem] balanceOf error for ${tokenId.slice(0, 10)}...: ${err}`);
         }
       }
     }
@@ -685,7 +698,7 @@ export async function getClaimablePositions(): Promise<{
     logger.info(`[Redeem] Found ${claimable.length} claimable position(s)`);
     return claimable;
   } catch (err) {
-    logger.error(`[Redeem] Failed to scan: ${err}`);
+    logger.error(`[Redeem] Scan failed: ${err}`);
     return [];
   }
 }
