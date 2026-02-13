@@ -276,14 +276,17 @@ export function ensureDb(): Promise<void> {
     addColIfMissing("settings", "scalp_cooldown_windows", "INTEGER NOT NULL DEFAULT 1");
     addColIfMissing("settings", "scalp_exit_window", "INTEGER NOT NULL DEFAULT 120");
 
-    // Migrate old scalp defaults to new values
+    // Force scalp defaults to new strategy values
     sqlJsDb.run(`UPDATE settings SET
       scalp_min_gap = 0.03,
       scalp_profit_target = 0.03,
       scalp_entry_min = 0.15,
-      scalp_entry_max = 0.85
-      WHERE scalp_min_gap = 0.08 AND scalp_profit_target = 0.07
-        AND scalp_entry_min = 0.40 AND scalp_entry_max = 0.70`);
+      scalp_entry_max = 0.85,
+      scalp_exit_window = 120
+      WHERE ROUND(scalp_min_gap, 2) != 0.03
+         OR ROUND(scalp_profit_target, 2) != 0.03
+         OR ROUND(scalp_entry_min, 2) != 0.15
+         OR ROUND(scalp_entry_max, 2) != 0.85`);
 
     sqlJsDb.run("INSERT OR IGNORE INTO settings (id) VALUES (1)");
     persist();
