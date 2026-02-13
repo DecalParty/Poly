@@ -8,7 +8,7 @@ import {
 import { evaluateStrategy } from "./strategy";
 import { executeBuy, executeSell, recordResolution } from "./executor";
 import { arbTick, getArbState, getArbStats, setArbCallbacks, getArbCapitalDeployed } from "./arbitrage";
-import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount, getRecentWinningResolutions } from "../db/queries";
+import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount, getRecentTradeConditionIds } from "../db/queries";
 import { startMarketScanner, stopMarketScanner, getActiveMarkets, getActiveMarketForAsset, getRecentOutcomes, markOutcomeResolved } from "../prices/market-scanner";
 import { getClobClient, redeemWinnings } from "../polymarket/client";
 import { Wallet } from "@ethersproject/wallet";
@@ -849,26 +849,38 @@ export async function startBot(): Promise<{ success: boolean; error?: string }> 
     addAlert("info", "Paper mode - CLOB client not needed");
   }
 
-  // Scan for unclaimed winnings from recent trades and queue them
+  // Scan for unclaimed winnings from recent buy trades and check on-chain
   if (!settings.paperTrading) {
     try {
-      const recentWins = getRecentWinningResolutions(4); // Last 4 hours
-      if (recentWins.length > 0) {
-        logger.info(`[Redeem] Found ${recentWins.length} recent winning trade(s) to check for unclaimed tokens`);
-        for (const win of recentWins) {
-          // Check if already queued
-          const alreadyQueued = pendingClaims.some(c => c.conditionId === win.conditionId);
-          if (!alreadyQueued) {
+      const recentTrades = getRecentTradeConditionIds(6); // Last 6 hours
+      logger.info(`[Redeem] Startup scan: found ${recentTrades.length} conditionId(s) from recent live trades`);
+
+      if (recentTrades.length > 0) {
+        // Check on-chain if proxy wallet has tokens for these markets
+        const { checkProxyTokenBalance } = await import("../polymarket/client");
+        let queued = 0;
+        for (const t of recentTrades) {
+          const alreadyQueued = pendingClaims.some(c => c.conditionId === t.conditionId);
+          if (alreadyQueued) continue;
+
+          const hasTokens = await checkProxyTokenBalance(t.conditionId);
+          if (hasTokens) {
             pendingClaims.push({
-              conditionId: win.conditionId,
-              negRisk: true, // All 15-min up/down markets are neg-risk
-              asset: win.asset,
+              conditionId: t.conditionId,
+              negRisk: true,
+              asset: t.asset,
               attempts: 0,
-              nextAttempt: Date.now() + 3000,
+              nextAttempt: Date.now() + 5000,
             });
+            queued++;
+            logger.info(`[Redeem] Queued ${t.asset} conditionId=${t.conditionId.slice(0, 10)}... (has tokens)`);
           }
         }
-        broadcastLog(`Queued ${recentWins.length} recent win(s) for auto-claim`);
+        if (queued > 0) {
+          broadcastLog(`Found ${queued} market(s) with unclaimed tokens - queued for auto-claim`);
+        } else {
+          logger.info(`[Redeem] No unclaimed tokens found in proxy wallet`);
+        }
       }
     } catch (err) {
       logger.error(`[Redeem] Startup claim scan failed: ${err}`);

@@ -554,6 +554,39 @@ async function verifyFokFill(
 // Re-export useful types
 export { Side, OrderType };
 
+/**
+ * Check if the proxy wallet (FUNDER_ADDRESS) holds any conditional tokens
+ * for a given conditionId. Used to detect unclaimed winnings.
+ */
+export async function checkProxyTokenBalance(conditionId: string): Promise<boolean> {
+  const funderAddress = process.env.FUNDER_ADDRESS;
+  if (!funderAddress) return false;
+
+  try {
+    const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
+    const provider = new StaticJsonRpcProvider(rpcUrl, 137);
+    const { Contract } = await import("@ethersproject/contracts");
+    const ctf = new Contract(CTF_ADDRESS, CTF_ABI, provider);
+
+    for (const idx of [1, 2]) {
+      try {
+        const tokenId = BigInt(conditionId) + BigInt(idx);
+        const bal = await ctf.balanceOf(funderAddress, tokenId);
+        if (Number(bal) > 0) {
+          logger.info(`[Redeem] Proxy wallet has tokens for conditionId=${conditionId.slice(0, 10)}... (idx=${idx}, bal=${bal})`);
+          return true;
+        }
+      } catch {
+        // Token ID derivation might be wrong, skip
+      }
+    }
+    return false;
+  } catch (err) {
+    logger.warn(`[Redeem] Balance check failed for ${conditionId.slice(0, 10)}...: ${err}`);
+    return false;
+  }
+}
+
 // ---- Polymarket contract addresses (Polygon mainnet) ----
 const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
 const NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296";

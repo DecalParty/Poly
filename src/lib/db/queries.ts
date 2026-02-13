@@ -397,14 +397,15 @@ export function updateSettings(s: Partial<BotSettings>): BotSettings {
 }
 
 /**
- * Get recent winning resolution trades (live only) for auto-claim retry on startup.
- * Returns conditionIds of trades where we won in the last 2 hours.
+ * Get conditionIds from recent live buy trades for auto-claim scan on startup.
+ * Since resolution trades may not exist (positions lost on restart), we check
+ * buy trades and verify on-chain if tokens are still claimable.
  */
-export function getRecentWinningResolutions(hoursBack = 2): { conditionId: string; asset: string }[] {
+export function getRecentTradeConditionIds(hoursBack = 6): { conditionId: string; asset: string }[] {
   const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
   const rows = rawDb.prepare(
     `SELECT DISTINCT condition_id, asset FROM trades
-     WHERE action = 'resolution' AND paper = 0 AND pnl > 0 AND timestamp >= ?`
+     WHERE paper = 0 AND action = 'buy' AND timestamp >= ?`
   ).all(cutoff) as { condition_id: string; asset: string }[];
   return rows.map(r => ({ conditionId: r.condition_id, asset: r.asset || "BTC" }));
 }
