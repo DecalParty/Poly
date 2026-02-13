@@ -275,7 +275,8 @@ export async function placeLimitBuyOrder(
   price: number,
   size: number,
   tickSize: string,
-  negRisk: boolean
+  negRisk: boolean,
+  postOnly: boolean = true
 ): Promise<{ success: boolean; orderId?: string; error?: string }> {
   const client = await getClobClient();
   if (!client) {
@@ -283,24 +284,30 @@ export async function placeLimitBuyOrder(
   }
 
   try {
-    const result = await client.createAndPostOrder({
-      tokenID: tokenId,
-      price,
-      side: Side.BUY,
-      size,
-      feeRateBps: undefined,
-      nonce: undefined,
-      expiration: undefined,
-    }, { tickSize: tickSize as TickSize, negRisk }, OrderType.GTC, false, true);
+    const args: [any, any, any, boolean?, boolean?] = [
+      {
+        tokenID: tokenId,
+        price,
+        side: Side.BUY,
+        size,
+        feeRateBps: undefined,
+        nonce: undefined,
+        expiration: undefined,
+      },
+      { tickSize: tickSize as TickSize, negRisk },
+      OrderType.GTC,
+    ];
+    if (postOnly) {
+      args.push(false, true); // FOK=false, postOnly=true
+    }
+    const result = await client.createAndPostOrder(...args);
 
-    logger.info(`[ARB] Limit buy placed: ${size.toFixed(2)} shares @ $${price} | token=${tokenId}`);
-    return {
-      success: true,
-      orderId: result?.orderID || result?.orderIds?.[0] || "unknown",
-    };
+    const orderId = result?.orderID || result?.orderIds?.[0] || "unknown";
+    logger.info(`[CLOB] Limit buy placed: ${size.toFixed(2)} shares @ $${price} | postOnly=${postOnly} | orderId=${orderId}`);
+    return { success: true, orderId };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`[ARB] Limit buy failed: ${msg}`);
+    logger.error(`[CLOB] Limit buy failed: ${msg}`);
     return { success: false, error: msg };
   }
 }

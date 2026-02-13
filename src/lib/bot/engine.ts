@@ -629,9 +629,16 @@ async function tradingLoop() {
           marketInfoCache.set(buy.conditionId, getActiveMarketForAsset(buy.asset)?.market!);
         }
       } else if (s === "CANCELLED" || s === "EXPIRED" || s === "REJECTED") {
+        broadcastLog(`Buy order ${s}: ${buy.side.toUpperCase()} ${buy.asset} @ $${buy.price.toFixed(2)} (${buy.orderId.slice(0, 12)}...)`);
+        addAlert("warning", `Order ${s.toLowerCase()}: ${buy.side.toUpperCase()} @ $${buy.price.toFixed(2)}`, buy.asset);
         pendingBuys.splice(i, 1);
+      } else {
+        // Still LIVE/OPEN - log occasionally
+        const ageMs = now - buy.placedAt;
+        if (ageMs > 10000 && ageMs % 15000 < 1100) {
+          broadcastLog(`Order still open: ${buy.side.toUpperCase()} @ $${buy.price.toFixed(2)} (${Math.round(ageMs / 1000)}s)`);
+        }
       }
-      // else still LIVE, keep waiting
     }
 
     // ---- 2. Manage active scalp positions (sell fills, trailing, time exits) ----
@@ -952,7 +959,8 @@ async function tradingLoop() {
               addAlert("info", `Scalp buy: ${signal.side.toUpperCase()} @ $${signal.actualPrice.toFixed(2)}`, market.asset);
             } else {
               // Live: place limit buy (postOnly)
-              const result = await placeLimitBuyOrder(tokenId, signal.actualPrice, shares, market.tickSize, market.negRisk);
+              // GTC without postOnly so it can fill immediately as taker
+              const result = await placeLimitBuyOrder(tokenId, signal.actualPrice, shares, market.tickSize, market.negRisk, false);
               if (result.success && result.orderId) {
                 pendingBuys.push({
                   orderId: result.orderId,
