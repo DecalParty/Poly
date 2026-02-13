@@ -359,10 +359,10 @@ export function getSettings(): BotSettings {
     scalpEnabled: (row as any).scalpEnabled ?? true,
     scalpTradeSize: (row as any).scalpTradeSize ?? 12,
     scalpMaxPositions: (row as any).scalpMaxPositions ?? 2,
-    scalpMinGap: (row as any).scalpMinGap ?? 0.08,
-    scalpProfitTarget: (row as any).scalpProfitTarget ?? 0.07,
-    scalpEntryMin: (row as any).scalpEntryMin ?? 0.40,
-    scalpEntryMax: (row as any).scalpEntryMax ?? 0.70,
+    scalpMinGap: (row as any).scalpMinGap ?? 75,
+    scalpProfitTarget: (row as any).scalpProfitTarget ?? 0.03,
+    scalpEntryMin: (row as any).scalpEntryMin ?? 0.15,
+    scalpEntryMax: (row as any).scalpEntryMax ?? 0.85,
     scalpCooldownWindows: (row as any).scalpCooldownWindows ?? 1,
   };
 }

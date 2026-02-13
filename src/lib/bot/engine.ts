@@ -11,7 +11,7 @@ import { insertTrade } from "../db/queries";
 import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount, getRecentTradeConditionIds } from "../db/queries";
 import { startMarketScanner, stopMarketScanner, getActiveMarkets, getActiveMarketForAsset, getRecentOutcomes, markOutcomeResolved } from "../prices/market-scanner";
 import { getClobClient, redeemWinnings, getClaimablePositions, placeLimitBuyOrder, placeLimitSellOrder, cancelOrder, getOrderStatus, placeSellOrder } from "../polymarket/client";
-import { startBinanceWs, stopBinanceWs, getBinancePrice, getWindowOpenPrice, getBtcWindowChange, isBinanceFresh, getBinanceLastUpdate, getBtcVelocity } from "../prices/binance-ws";
+import { startBinanceWs, stopBinanceWs, getBinancePrice, getWindowOpenPrice, getBtcWindowChange, isBinanceFresh, getBinanceLastUpdate, getBtcVelocity, getBtcDelta } from "../prices/binance-ws";
 import { Wallet } from "@ethersproject/wallet";
 import { StaticJsonRpcProvider } from "@ethersproject/providers";
 import { Contract } from "@ethersproject/contracts";
@@ -98,7 +98,7 @@ const scalpPositions: ScalpPos[] = [];
 const pendingBuys: PendingBuy[] = [];
 let cooldownUntilWindow = 0;
 let lastEntryEvalTime = 0;
-const ENTRY_EVAL_INTERVAL_MS = 5000;
+const ENTRY_EVAL_INTERVAL_MS = 1000; // 1s -- react fast to Bitbo spikes
 
 // Circuit breaker
 let circuitBreakerTriggered = false;
@@ -891,33 +891,22 @@ async function tradingLoop() {
           // Don't enter too close to end
           if (market.secondsRemaining < 180) continue;
 
-          const velocity = getBtcVelocity(60_000); // 60s lookback
+          const delta = getBtcDelta(5000); // $ change in last 5 seconds
           const signal = evaluateScalpEntry(
-            btcChange, market.yesPrice, market.noPrice,
+            delta, market.yesPrice, market.noPrice,
             settings.scalpMinGap, settings.scalpEntryMin, settings.scalpEntryMax,
-            market.secondsRemaining, velocity
+            market.secondsRemaining, 0
           );
 
-          // Diagnostic log every 15s showing why we skipped or what signal we got
+          // Diagnostic log every 15s
           const diagKey = `_diag_${market.asset}`;
           const lastDiag = lastLoggedDecision[diagKey];
           if (!lastDiag || now - lastDiag.time >= 15000) {
             lastLoggedDecision[diagKey] = { reason: "diag", time: now };
-            const fair = computeFairValue(btcChange, market.secondsRemaining, velocity);
-            const upGap = fair.up - market.yesPrice;
-            const downGap = fair.down - market.noPrice;
-            const flat = Math.abs(btcChange) < 0.0005;
             const timeMin = Math.floor(market.secondsRemaining / 60);
             const timeSec = market.secondsRemaining % 60;
-            const velStr = `vel ${(velocity * 100).toFixed(3)}%/m`;
-            const velDamp = (1 / (1 + Math.abs(velocity) * 400) * 100).toFixed(0);
-            if (flat) {
-              broadcastLog(`[${market.asset}] BTC flat (${(btcChange * 100).toFixed(3)}%) ${timeMin}:${timeSec.toString().padStart(2, "0")} left | YES $${market.yesPrice.toFixed(2)} NO $${market.noPrice.toFixed(2)}`);
-            } else if (Math.abs(upGap) > 0.20 || Math.abs(downGap) > 0.20) {
-              broadcastLog(`[${market.asset}] DESYNC ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC ${(btcChange * 100).toFixed(3)}% | UP $${market.yesPrice.toFixed(2)} fair $${fair.up.toFixed(2)} | DOWN $${market.noPrice.toFixed(2)} fair $${fair.down.toFixed(2)} | Window open mismatch, skipping`);
-            } else if (!signal) {
-              broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC ${(btcChange * 100).toFixed(3)}% ${velStr} | UP $${market.yesPrice.toFixed(2)} fair $${fair.up.toFixed(2)} gap ${upGap >= 0 ? "+" : ""}${upGap.toFixed(2)} | DOWN $${market.noPrice.toFixed(2)} fair $${fair.down.toFixed(2)} gap ${downGap >= 0 ? "+" : ""}${downGap.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+`);
-            }
+            const deltaStr = delta >= 0 ? `+$${delta.toFixed(0)}` : `-$${Math.abs(delta).toFixed(0)}`;
+            broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC $${getBinancePrice().toFixed(0)} (${deltaStr}/5s) | UP $${market.yesPrice.toFixed(2)} DOWN $${market.noPrice.toFixed(2)} | Spike threshold: $${settings.scalpMinGap.toFixed(0)}`);
           }
 
           if (signal) {

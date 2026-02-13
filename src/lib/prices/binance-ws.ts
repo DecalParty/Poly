@@ -14,8 +14,8 @@ let windowOpenPrice = 0;
 let windowOpenTs = 0;
 let running = false;
 
-// Rolling price buffer for velocity tracking (last 3 minutes)
-const VELOCITY_BUFFER_MAX_AGE_MS = 180_000; // 3 min
+// Rolling price buffer for spike detection (last 30 seconds, sampled every 500ms)
+const SPIKE_BUFFER_MAX_AGE_MS = 30_000;
 const priceBuffer: { price: number; ts: number }[] = [];
 
 const BITBO_WS_URL = "wss://api.bitbo.io";
@@ -29,12 +29,12 @@ function handlePrice(price: number) {
   lastPrice = price;
   lastUpdate = Date.now();
 
-  // Record price for velocity tracking (sample every ~2s to avoid bloat)
+  // Record price for spike detection (sample every ~500ms for fast delta tracking)
   const now = Date.now();
-  if (priceBuffer.length === 0 || now - priceBuffer[priceBuffer.length - 1].ts >= 2000) {
+  if (priceBuffer.length === 0 || now - priceBuffer[priceBuffer.length - 1].ts >= 500) {
     priceBuffer.push({ price, ts: now });
     // Trim old entries
-    while (priceBuffer.length > 0 && now - priceBuffer[0].ts > VELOCITY_BUFFER_MAX_AGE_MS) {
+    while (priceBuffer.length > 0 && now - priceBuffer[0].ts > SPIKE_BUFFER_MAX_AGE_MS) {
       priceBuffer.shift();
     }
   }
@@ -155,14 +155,14 @@ export function isBinanceFresh(): boolean {
 }
 
 /**
- * BTC velocity: % change over the last N seconds.
+ * BTC dollar change over the last N milliseconds.
  * Positive = price rising, negative = falling.
  * Returns 0 if not enough data.
  *
- * Use to detect rapid moves - if |velocity| is high, the market
- * is moving fast and fair values are unreliable.
+ * Used for spike detection: if BTC moved >$X in last 3-5 seconds,
+ * Polymarket hasn't caught up yet -> buy opportunity.
  */
-export function getBtcVelocity(lookbackMs: number = 60_000): number {
+export function getBtcDelta(lookbackMs: number = 5000): number {
   if (priceBuffer.length < 2) return 0;
   const now = Date.now();
   const cutoff = now - lookbackMs;
@@ -177,5 +177,12 @@ export function getBtcVelocity(lookbackMs: number = 60_000): number {
   }
 
   if (!oldest || oldest.price <= 0) return 0;
-  return (lastPrice - oldest.price) / oldest.price;
+  return lastPrice - oldest.price;
+}
+
+/** Kept for backward compat - returns % change. */
+export function getBtcVelocity(lookbackMs: number = 60_000): number {
+  if (lastPrice <= 0) return 0;
+  const delta = getBtcDelta(lookbackMs);
+  return delta / lastPrice;
 }
