@@ -61,9 +61,9 @@ export async function executeBuy(
     return { trade };
   }
 
-  // Live trading — FOK market order, uses dollar amount directly
-  logger.info(`[LIVE] Placing FOK BUY: $${dollarAmount} ${side} (est. ${shares.toFixed(4)} shares @ $${price.toFixed(4)})`);
-  const result = await placeBuyOrder(tokenId, price, dollarAmount, market.tickSize, market.negRisk);
+  // Live trading — GTC order with spread-crossing price for instant fill
+  logger.info(`[LIVE] Placing BUY: ${shares.toFixed(4)} ${side} @ $${price.toFixed(4)} ($${dollarAmount})`);
+  const result = await placeBuyOrder(tokenId, price, shares, market.tickSize, market.negRisk);
 
   if (!result.success) {
     logger.error(`Buy order failed: ${result.error}`);

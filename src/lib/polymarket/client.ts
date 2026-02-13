@@ -117,14 +117,14 @@ export function getReadOnlyClient(): ClobClient {
 }
 
 /**
- * Place a FOK (Fill or Kill) buy order on Polymarket.
- * Fills instantly at best available price or is rejected entirely.
- * Used by the high-confidence strategy for guaranteed execution.
+ * Place a buy order on Polymarket with spread-crossing price.
+ * Bumps price above midpoint to cross the spread and fill as a taker.
+ * Verifies actual fill before returning success.
  */
 export async function placeBuyOrder(
   tokenId: string,
   price: number,
-  dollarAmount: number,
+  size: number,
   tickSize: string,
   negRisk: boolean
 ): Promise<{ success: boolean; orderId?: string; error?: string; filledSize?: number; filledPrice?: number }> {
@@ -134,52 +134,57 @@ export async function placeBuyOrder(
   }
 
   try {
-    logger.info(`[FOK] Placing BUY: $${dollarAmount} on token=${tokenId.slice(0, 10)}...`);
-    const result = await client.createAndPostMarketOrder({
+    // Bump price up by 2 cents to cross the spread and fill as taker
+    const tick = parseFloat(tickSize) || 0.01;
+    const crossPrice = Math.min(0.99, Math.round((price + 0.02) / tick) * tick);
+
+    logger.info(`[LIVE] BUY: ${size.toFixed(4)} shares @ $${crossPrice.toFixed(4)} (mid=$${price.toFixed(4)}) | token=${tokenId.slice(0, 10)}...`);
+    const result = await client.createAndPostOrder({
       tokenID: tokenId,
-      amount: dollarAmount,
+      price: crossPrice,
       side: Side.BUY,
+      size,
       feeRateBps: undefined,
       nonce: undefined,
-    }, { tickSize: tickSize as TickSize, negRisk }, OrderType.FOK);
+      expiration: undefined,
+    }, { tickSize: tickSize as TickSize, negRisk });
 
-    logger.info(`[FOK] BUY response: ${JSON.stringify(result)}`);
+    logger.info(`[LIVE] BUY response: ${JSON.stringify(result)}`);
 
     const orderId = result?.orderID || result?.orderIds?.[0];
     if (!orderId || orderId === "unknown") {
-      logger.error(`Buy FOK returned no orderId — order not accepted`);
+      logger.error(`Buy order returned no orderId`);
       return { success: false, error: "No orderId returned from Polymarket" };
     }
 
-    // FOK fills instantly — check direct response first, then getTrades, then getOrder
-    const fill = await verifyFokFill(client, orderId, tokenId, "BUY");
+    // Verify fill
+    const fillResult = await waitForOrderFill(orderId, 8000, 500);
 
-    if (!fill.filled) {
-      logger.warn(`Buy FOK ${orderId} — no fill confirmed (${fill.method}): ${fill.status}`);
-      return { success: false, error: `Order not filled (${fill.status})`, orderId };
+    if (!fillResult.filled || fillResult.sizeFilled <= 0) {
+      logger.warn(`Buy order ${orderId} NOT filled (status: ${fillResult.status})`);
+      return { success: false, error: `Order not filled (status: ${fillResult.status})`, orderId };
     }
 
     logger.info(
-      `Buy FOK FILLED: ${fill.sizeFilled.toFixed(4)} shares @ $${fill.avgPrice.toFixed(4)} | ` +
-      `verified via ${fill.method} | token=${tokenId.slice(0, 10)}...`
+      `Buy FILLED: ${fillResult.sizeFilled.toFixed(4)} shares @ $${fillResult.avgPrice.toFixed(4)} | token=${tokenId.slice(0, 10)}...`
     );
     return {
       success: true,
       orderId,
-      filledSize: fill.sizeFilled,
-      filledPrice: fill.avgPrice || price,
+      filledSize: fillResult.sizeFilled,
+      filledPrice: fillResult.avgPrice || crossPrice,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`Buy FOK failed: ${msg}`);
+    logger.error(`Buy order failed: ${msg}`);
     return { success: false, error: msg };
   }
 }
 
 /**
- * Place a FOK (Fill or Kill) sell order on Polymarket.
- * Fills instantly at best available price or is rejected entirely.
- * Used by the high-confidence strategy for guaranteed execution.
+ * Place a sell order on Polymarket with spread-crossing price.
+ * Drops price below midpoint to cross the spread and fill as a taker.
+ * Verifies actual fill before returning success.
  */
 export async function placeSellOrder(
   tokenId: string,
@@ -194,44 +199,49 @@ export async function placeSellOrder(
   }
 
   try {
-    logger.info(`[FOK] Placing SELL: ${shares.toFixed(4)} shares on token=${tokenId.slice(0, 10)}...`);
-    const result = await client.createAndPostMarketOrder({
+    // Drop price by 2 cents to cross the spread and fill as taker
+    const tick = parseFloat(tickSize) || 0.01;
+    const crossPrice = Math.max(0.01, Math.round((price - 0.02) / tick) * tick);
+
+    logger.info(`[LIVE] SELL: ${shares.toFixed(4)} shares @ $${crossPrice.toFixed(4)} (mid=$${price.toFixed(4)}) | token=${tokenId.slice(0, 10)}...`);
+    const result = await client.createAndPostOrder({
       tokenID: tokenId,
-      amount: shares,
+      price: crossPrice,
       side: Side.SELL,
+      size: shares,
       feeRateBps: undefined,
       nonce: undefined,
-    }, { tickSize: tickSize as TickSize, negRisk }, OrderType.FOK);
+      expiration: undefined,
+    }, { tickSize: tickSize as TickSize, negRisk });
 
-    logger.info(`[FOK] SELL response: ${JSON.stringify(result)}`);
+    logger.info(`[LIVE] SELL response: ${JSON.stringify(result)}`);
 
     const orderId = result?.orderID || result?.orderIds?.[0];
     if (!orderId || orderId === "unknown") {
-      logger.error(`Sell FOK returned no orderId — order not accepted`);
+      logger.error(`Sell order returned no orderId`);
       return { success: false, error: "No orderId returned from Polymarket" };
     }
 
-    // FOK fills instantly — check direct response first, then getTrades, then getOrder
-    const fill = await verifyFokFill(client, orderId, tokenId, "SELL");
+    // Verify fill
+    const fillResult = await waitForOrderFill(orderId, 8000, 500);
 
-    if (!fill.filled) {
-      logger.warn(`Sell FOK ${orderId} — no fill confirmed (${fill.method}): ${fill.status}`);
-      return { success: false, error: `Order not filled (${fill.status})`, orderId };
+    if (!fillResult.filled || fillResult.sizeFilled <= 0) {
+      logger.warn(`Sell order ${orderId} NOT filled (status: ${fillResult.status})`);
+      return { success: false, error: `Order not filled (status: ${fillResult.status})`, orderId };
     }
 
     logger.info(
-      `Sell FOK FILLED: ${fill.sizeFilled.toFixed(4)} shares @ $${fill.avgPrice.toFixed(4)} | ` +
-      `verified via ${fill.method} | token=${tokenId.slice(0, 10)}...`
+      `Sell FILLED: ${fillResult.sizeFilled.toFixed(4)} shares @ $${fillResult.avgPrice.toFixed(4)} | token=${tokenId.slice(0, 10)}...`
     );
     return {
       success: true,
       orderId,
-      filledSize: fill.sizeFilled,
-      filledPrice: fill.avgPrice || price,
+      filledSize: fillResult.sizeFilled,
+      filledPrice: fillResult.avgPrice || crossPrice,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error(`Sell FOK failed: ${msg}`);
+    logger.error(`Sell order failed: ${msg}`);
     return { success: false, error: msg };
   }
 }

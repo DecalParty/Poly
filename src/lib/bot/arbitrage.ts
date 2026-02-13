@@ -260,32 +260,32 @@ async function placeLadderOrders(
 // --- Live Fill Polling (checks actual order status on Polymarket) -----------------
 
 async function pollLiveFills(window: ArbWindowState) {
-  let changed = false;
+let changed = false;
 
-  for (const order of [...window.upSide.orders, ...window.downSide.orders]) {
-    if ((order.status === "placed" || order.status === "partial") && order.orderId) {
-      const status = await getOrderStatus(order.orderId);
-      if (!status) continue;
+for (const order of [...window.upSide.orders, ...window.downSide.orders]) {
+  if ((order.status === "placed" || order.status === "partial") && order.orderId) {
+    const status = await getOrderStatus(order.orderId);
+    if (!status) continue;
 
-      if (status.sizeFilled > order.filledSize) {
-        order.filledSize = status.sizeFilled;
-        const s = status.status.toUpperCase();
-        if (s === "MATCHED" || s === "CLOSED" || s === "FILLED") {
-          order.status = "filled";
-        } else if (status.sizeFilled > 0) {
-          order.status = "partial";
-        }
-        changed = true;
+    const s = String(status.status || "").toUpperCase();
+
+    if (status.sizeFilled > order.filledSize) {
+      order.filledSize = status.sizeFilled;
+      if (s === "MATCHED" || s === "CLOSED" || s === "FILLED") {
+        order.status = "filled";
+      } else if (status.sizeFilled > 0) {
+        order.status = "partial";
       }
+      changed = true;
+    }
 
-      // Mark cancelled/expired orders
-      const s = status.status.toUpperCase();
-      if (s === "CANCELLED" || s === "EXPIRED" || s === "REJECTED") {
-        order.status = "cancelled";
-        changed = true;
-      }
+    // Mark cancelled/expired orders
+    if (s === "CANCELLED" || s === "EXPIRED" || s === "REJECTED") {
+      order.status = "cancelled";
+      changed = true;
     }
   }
+}
 
   if (changed) {
     recalcSideFills(window.upSide);
