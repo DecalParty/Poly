@@ -11,7 +11,7 @@ import { insertTrade } from "../db/queries";
 import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount, getRecentTradeConditionIds } from "../db/queries";
 import { startMarketScanner, stopMarketScanner, getActiveMarkets, getActiveMarketForAsset, getRecentOutcomes, markOutcomeResolved } from "../prices/market-scanner";
 import { getClobClient, redeemWinnings, getClaimablePositions, placeLimitBuyOrder, placeLimitSellOrder, cancelOrder, getOrderStatus, placeSellOrder } from "../polymarket/client";
-import { startBinanceWs, stopBinanceWs, getBinancePrice, getWindowOpenPrice, getBtcWindowChange, isBinanceFresh } from "../prices/binance-ws";
+import { startBinanceWs, stopBinanceWs, getBinancePrice, getWindowOpenPrice, getBtcWindowChange, isBinanceFresh, getBinanceLastUpdate } from "../prices/binance-ws";
 import { Wallet } from "@ethersproject/wallet";
 import { StaticJsonRpcProvider } from "@ethersproject/providers";
 import { Contract } from "@ethersproject/contracts";
@@ -843,17 +843,25 @@ async function tradingLoop() {
     }
 
     // ---- 3. Evaluate new scalp entries (every 5s) ----
-    if (now - lastEntryEvalTime >= ENTRY_EVAL_INTERVAL_MS && binanceFresh) {
+    if (now - lastEntryEvalTime >= ENTRY_EVAL_INTERVAL_MS) {
       lastEntryEvalTime = now;
 
-      // Check cooldown
+      // Gate 1: Binance data must be fresh
+      if (!binanceFresh) {
+        const lastLog = lastLoggedDecision["_binance"];
+        if (!lastLog || now - lastLog.time >= 15000) {
+          lastLoggedDecision["_binance"] = { reason: "no-binance", time: now };
+          const age = getBinanceLastUpdate() > 0 ? Math.round((now - getBinanceLastUpdate()) / 1000) : -1;
+          broadcastLog(`Waiting for Binance feed (last update: ${age >= 0 ? age + "s ago" : "never"})`);
+        }
+      } else {
+      // Gate 2: Cooldown
       const currentWindowStart = Math.floor(now / 1000 / 900) * 900;
       if (cooldownUntilWindow > currentWindowStart) {
         const winsToWait = Math.ceil((cooldownUntilWindow - currentWindowStart) / 900);
-        const logNow = now;
         const lastLog = lastLoggedDecision["_cooldown"];
-        if (!lastLog || logNow - lastLog.time >= 15000) {
-          lastLoggedDecision["_cooldown"] = { reason: "cooldown", time: logNow };
+        if (!lastLog || now - lastLog.time >= 15000) {
+          lastLoggedDecision["_cooldown"] = { reason: "cooldown", time: now };
           broadcastLog(`Cooldown: skipping ${winsToWait} more window(s) after loss`);
         }
       } else {
@@ -876,6 +884,22 @@ async function tradingLoop() {
             btcChange, market.yesPrice, market.noPrice,
             settings.scalpMinGap, settings.scalpEntryMin, settings.scalpEntryMax
           );
+
+          // Diagnostic log every 15s showing why we skipped or what signal we got
+          const diagKey = `_diag_${market.asset}`;
+          const lastDiag = lastLoggedDecision[diagKey];
+          if (!lastDiag || now - lastDiag.time >= 15000) {
+            lastLoggedDecision[diagKey] = { reason: "diag", time: now };
+            const fair = computeFairValue(btcChange);
+            const upGap = fair.up - market.yesPrice;
+            const downGap = fair.down - market.noPrice;
+            const flat = Math.abs(btcChange) < 0.0005;
+            if (flat) {
+              broadcastLog(`[${market.asset}] BTC flat (${(btcChange * 100).toFixed(3)}%) - skipping | BTC $${getBinancePrice().toFixed(0)} | YES $${market.yesPrice.toFixed(2)} NO $${market.noPrice.toFixed(2)}`);
+            } else if (!signal) {
+              broadcastLog(`[${market.asset}] No signal | BTC ${(btcChange * 100).toFixed(3)}% | Fair UP $${fair.up.toFixed(2)} DOWN $${fair.down.toFixed(2)} | Gap UP ${upGap >= 0 ? "+" : ""}${upGap.toFixed(2)} DOWN ${downGap >= 0 ? "+" : ""}${downGap.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+ in $${settings.scalpEntryMin}-$${settings.scalpEntryMax}`);
+            }
+          }
 
           if (signal) {
             const tokenId = signal.side === "yes" ? market.yesTokenId : market.noTokenId;
@@ -955,6 +979,7 @@ async function tradingLoop() {
           }
         }
       }
+      } // end binanceFresh else
     }
 
     // ---- 4. Process pending claims ----
