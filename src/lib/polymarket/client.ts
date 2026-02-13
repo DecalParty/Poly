@@ -556,7 +556,7 @@ export { Side, OrderType };
 
 /**
  * Check if the proxy wallet (FUNDER_ADDRESS) holds any conditional tokens
- * for a given conditionId. Used to detect unclaimed winnings.
+ * for a given conditionId. Uses CTF getCollectionId + getPositionId for correct token IDs.
  */
 export async function checkProxyTokenBalance(conditionId: string): Promise<boolean> {
   const funderAddress = process.env.FUNDER_ADDRESS;
@@ -566,18 +566,25 @@ export async function checkProxyTokenBalance(conditionId: string): Promise<boole
     const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
     const provider = new StaticJsonRpcProvider(rpcUrl, 137);
     const { Contract } = await import("@ethersproject/contracts");
-    const ctf = new Contract(CTF_ADDRESS, CTF_ABI, provider);
+    const ctfWithPositions = new Contract(CTF_ADDRESS, [
+      ...CTF_ABI,
+      "function getCollectionId(bytes32 parentCollectionId, bytes32 conditionId, uint256 indexSet) view returns (bytes32)",
+      "function getPositionId(address collateralToken, bytes32 collectionId) view returns (uint256)",
+    ], provider);
+
+    const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
     for (const idx of [1, 2]) {
       try {
-        const tokenId = BigInt(conditionId) + BigInt(idx);
-        const bal = await ctf.balanceOf(funderAddress, tokenId);
+        const collectionId = await ctfWithPositions.getCollectionId(ZERO_BYTES32, conditionId, idx);
+        const positionId = await ctfWithPositions.getPositionId(COLLATERAL_ADDRESS, collectionId);
+        const bal = await ctfWithPositions.balanceOf(funderAddress, positionId);
         if (Number(bal) > 0) {
-          logger.info(`[Redeem] Proxy wallet has tokens for conditionId=${conditionId.slice(0, 10)}... (idx=${idx}, bal=${bal})`);
+          logger.info(`[Redeem] Proxy wallet has ${bal.toString()} tokens for conditionId=${conditionId.slice(0, 10)}... (idx=${idx})`);
           return true;
         }
       } catch {
-        // Token ID derivation might be wrong, skip
+        // Skip this index
       }
     }
     return false;
@@ -634,22 +641,8 @@ export async function redeemWinnings(
     const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
     const indexSets = [1, 2];
 
-    // Check if proxy wallet has any tokens to redeem
-    const ctf = new Contract(CTF_ADDRESS, CTF_ABI, provider);
-    let hasTokens = false;
-    for (const idx of indexSets) {
-      try {
-        const tokenId = BigInt(conditionId) + BigInt(idx);
-        const bal = await ctf.balanceOf(funderAddress, tokenId);
-        if (Number(bal) > 0) {
-          hasTokens = true;
-          break;
-        }
-      } catch {
-        hasTokens = true;
-        break;
-      }
-    }
+    // Check if proxy wallet has any tokens to redeem (skip check and just try — revert is harmless)
+    const hasTokens = await checkProxyTokenBalance(conditionId);
 
     if (!hasTokens) {
       logger.info(`[Redeem] No tokens at proxy wallet for ${conditionId.slice(0, 10)}...`);
