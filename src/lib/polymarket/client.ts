@@ -629,16 +629,11 @@ async function isConditionResolvedOnChain(conditionId: string): Promise<boolean>
 }
 
 /**
- * Use the CLOB API to find recent trades and check which token IDs have
- * remaining balances that may be claimable. This is more reliable than
- * only scanning by conditionId since it uses the actual token IDs
- * from our trade history.
+ * Use CLOB API getTrades() to discover conditionIds we've traded,
+ * then check on-chain (CTF balanceOf) if the proxy wallet still holds tokens.
  */
 export async function getClaimablePositions(): Promise<{
   conditionId: string;
-  tokenId: string;
-  balance: number;
-  market: string;
   negRisk: boolean;
 }[]> {
   const client = await getClobClient();
@@ -648,50 +643,21 @@ export async function getClaimablePositions(): Promise<{
     const trades = await client.getTrades(undefined, false);
     if (!trades || trades.length === 0) return [];
 
-    // Deduplicate by asset_id (token ID) and group by conditionId (market)
-    const tokenMap = new Map<string, { conditionId: string; tokenId: string; market: string }>();
+    // Unique conditionIds from trade history
+    const seen = new Set<string>();
     for (const t of trades) {
-      if (!tokenMap.has(t.asset_id)) {
-        tokenMap.set(t.asset_id, {
-          conditionId: t.market,
-          tokenId: t.asset_id,
-          market: t.market,
-        });
-      }
+      if (t.market) seen.add(t.market);
     }
 
-    const claimable: {
-      conditionId: string;
-      tokenId: string;
-      balance: number;
-      market: string;
-      negRisk: boolean;
-    }[] = [];
+    logger.info(`[Redeem] CLOB API returned ${trades.length} trades across ${seen.size} markets`);
 
-    for (const [tokenId, info] of tokenMap) {
-      try {
-        const bal = await client.getBalanceAllowance({
-          asset_type: "CONDITIONAL" as any,
-          token_id: tokenId,
-        });
-        const balance = parseFloat(bal?.balance || "0");
-        if (balance > 0) {
-          // Check if the condition has been resolved on-chain
-          const resolved = await isConditionResolvedOnChain(info.conditionId);
-          if (resolved) {
-            const negRisk = await client.getNegRisk(tokenId).catch(() => false);
-            claimable.push({
-              conditionId: info.conditionId,
-              tokenId,
-              balance,
-              market: info.market,
-              negRisk: !!negRisk,
-            });
-            logger.info(`[Redeem] Claimable: ${balance} tokens for ${info.conditionId.slice(0, 10)}... (token=${tokenId.slice(0, 10)}...)`);
-          }
-        }
-      } catch (err) {
-        logger.debug(`[Redeem] Balance check failed for token ${tokenId.slice(0, 10)}...: ${err}`);
+    const claimable: { conditionId: string; negRisk: boolean }[] = [];
+
+    for (const conditionId of seen) {
+      const hasTokens = await checkProxyTokenBalance(conditionId);
+      if (hasTokens) {
+        const negRisk = await client.getNegRisk(trades.find(t => t.market === conditionId)!.asset_id).catch(() => true);
+        claimable.push({ conditionId, negRisk: !!negRisk });
       }
     }
 

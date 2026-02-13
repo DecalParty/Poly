@@ -863,15 +863,15 @@ export async function startBot(): Promise<{ success: boolean; error?: string }> 
           pendingClaims.push({
             conditionId: pos.conditionId,
             negRisk: pos.negRisk,
-            asset: "BTC", // CLOB API doesn't return asset name, default to BTC
+            asset: "BTC",
             attempts: 0,
             nextAttempt: Date.now() + 5000,
           });
           queued++;
-          logger.info(`[Redeem] CLOB API found claimable: ${pos.balance} tokens for ${pos.conditionId.slice(0, 10)}...`);
+          logger.info(`[Redeem] Queued ${pos.conditionId.slice(0, 10)}... for claim`);
         }
         if (queued > 0) {
-          broadcastLog(`CLOB API found ${queued} claimable position(s) - queued for auto-claim`);
+          broadcastLog(`Found ${queued} claimable position(s) via CLOB API - queued for auto-claim`);
         }
       }
 
