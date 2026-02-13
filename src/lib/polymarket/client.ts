@@ -571,6 +571,8 @@ const CTF_ABI = [
 const NEG_RISK_ABI = [
   "function redeemPositions(bytes32 conditionId, uint256[] indexSets)",
   "function balanceOf(address owner, uint256 id) view returns (uint256)",
+  "function getDetermined(bytes32 questionId) view returns (bool)",
+  "function payoutNumerators(bytes32 questionId, uint256 index) view returns (uint256)",
 ];
 
 const GNOSIS_SAFE_ABI = [
@@ -614,13 +616,27 @@ export async function checkProxyTokenBalance(conditionId: string): Promise<boole
 }
 
 /**
- * Check if a condition has been resolved on-chain (payouts set) using CTF payoutDenominator.
- * Returns true if the market has been resolved and payouts are available for redemption.
+ * Check if a condition has been resolved on-chain.
+ * For negRisk markets: uses NegRiskAdapter.getDetermined(questionId).
+ * For standard markets: uses CTF.payoutDenominator(conditionId).
  */
-async function isConditionResolvedOnChain(conditionId: string): Promise<boolean> {
+async function isConditionResolvedOnChain(conditionId: string, negRisk: boolean): Promise<boolean> {
   try {
     const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
     const provider = new StaticJsonRpcProvider(rpcUrl, 137);
+
+    if (negRisk) {
+      // For negRisk markets the conditionId from Gamma is actually a questionId
+      // that the NegRiskAdapter tracks. getDetermined returns true once resolved.
+      const adapter = new Contract(NEG_RISK_ADAPTER, NEG_RISK_ABI, provider);
+      const determined = await adapter.getDetermined(conditionId);
+      if (determined) return true;
+      // Fallback: also try CTF in case the conditionId is a real CTF conditionId
+      const ctf = new Contract(CTF_ADDRESS, CTF_ABI, provider);
+      const denom = await ctf.payoutDenominator(conditionId);
+      return Number(denom) > 0;
+    }
+
     const ctf = new Contract(CTF_ADDRESS, CTF_ABI, provider);
     const denom = await ctf.payoutDenominator(conditionId);
     return Number(denom) > 0;
@@ -732,7 +748,7 @@ export async function redeemWinnings(
     const indexSets = [1, 2];
 
     // Verify the condition is actually resolved on-chain before attempting redeem
-    const resolved = await isConditionResolvedOnChain(conditionId);
+    const resolved = await isConditionResolvedOnChain(conditionId, negRisk);
     if (!resolved) {
       logger.info(`[Redeem] Condition ${conditionId.slice(0, 10)}... not yet resolved on-chain`);
       return { success: false, error: "Condition not yet resolved on-chain" };
