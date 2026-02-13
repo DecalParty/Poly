@@ -629,41 +629,63 @@ async function isConditionResolvedOnChain(conditionId: string): Promise<boolean>
 }
 
 /**
- * Use CLOB API getTrades() to discover conditionIds we've traded,
- * then check on-chain (CTF balanceOf) if the proxy wallet still holds tokens.
+ * Use CLOB API getTrades() to find positions with tokens still at the proxy wallet.
+ * Checks balanceOf using the actual token IDs from trades (no derivation).
  */
 export async function getClaimablePositions(): Promise<{
   conditionId: string;
   negRisk: boolean;
 }[]> {
   const client = await getClobClient();
-  if (!client) return [];
+  const funderAddress = process.env.FUNDER_ADDRESS;
+  if (!client || !funderAddress) return [];
 
   try {
     const trades = await client.getTrades(undefined, false);
-    if (!trades || trades.length === 0) return [];
-
-    // Unique conditionIds from trade history
-    const seen = new Set<string>();
-    for (const t of trades) {
-      if (t.market) seen.add(t.market);
+    if (!trades || trades.length === 0) {
+      logger.info(`[Redeem] CLOB API returned 0 trades`);
+      return [];
     }
 
-    logger.info(`[Redeem] CLOB API returned ${trades.length} trades across ${seen.size} markets`);
+    const rpcUrl = process.env.POLYGON_RPC_URL || "https://polygon-rpc.com";
+    const provider = new StaticJsonRpcProvider(rpcUrl, 137);
+    const ctf = new Contract(CTF_ADDRESS, CTF_ABI, provider);
+
+    // Group by conditionId, collect all token IDs per market
+    const marketTokens = new Map<string, Set<string>>();
+    for (const t of trades) {
+      if (!t.market || !t.asset_id) continue;
+      if (!marketTokens.has(t.market)) marketTokens.set(t.market, new Set());
+      marketTokens.get(t.market)!.add(t.asset_id);
+    }
+
+    logger.info(`[Redeem] CLOB API: ${trades.length} trades across ${marketTokens.size} markets`);
 
     const claimable: { conditionId: string; negRisk: boolean }[] = [];
+    const seen = new Set<string>();
 
-    for (const conditionId of seen) {
-      const hasTokens = await checkProxyTokenBalance(conditionId);
-      if (hasTokens) {
-        const negRisk = await client.getNegRisk(trades.find(t => t.market === conditionId)!.asset_id).catch(() => true);
-        claimable.push({ conditionId, negRisk: !!negRisk });
+    for (const [conditionId, tokenIds] of marketTokens) {
+      for (const tokenId of tokenIds) {
+        try {
+          const bal = await ctf.balanceOf(funderAddress, tokenId);
+          if (Number(bal) > 0) {
+            logger.info(`[Redeem] Found ${bal.toString()} tokens for ${conditionId.slice(0, 10)}... tokenId=${tokenId.slice(0, 10)}...`);
+            if (!seen.has(conditionId)) {
+              seen.add(conditionId);
+              const negRisk = await client.getNegRisk(tokenId).catch(() => true);
+              claimable.push({ conditionId, negRisk: !!negRisk });
+            }
+          }
+        } catch (err) {
+          logger.debug(`[Redeem] balanceOf failed for token ${tokenId.slice(0, 10)}...: ${err}`);
+        }
       }
     }
 
+    logger.info(`[Redeem] Found ${claimable.length} claimable position(s)`);
     return claimable;
   } catch (err) {
-    logger.error(`[Redeem] Failed to scan claimable positions: ${err}`);
+    logger.error(`[Redeem] Failed to scan: ${err}`);
     return [];
   }
 }
