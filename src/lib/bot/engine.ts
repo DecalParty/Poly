@@ -98,7 +98,7 @@ const scalpPositions: ScalpPos[] = [];
 const pendingBuys: PendingBuy[] = [];
 let cooldownUntilWindow = 0;
 let lastEntryEvalTime = 0;
-const ENTRY_EVAL_INTERVAL_MS = 1000; // 1s -- react fast to Bitbo spikes
+const ENTRY_EVAL_INTERVAL_MS = 500; // 500ms -- catch fast gaps
 
 // Circuit breaker
 let circuitBreakerTriggered = false;
@@ -904,6 +904,7 @@ async function tradingLoop() {
             trend.direction, trend.strength,
             market.secondsRemaining,
             settings.scalpMinGap, settings.scalpEntryMin, settings.scalpEntryMax,
+            settings.scalpExitWindow,
           );
 
           // Diagnostic log every 15s

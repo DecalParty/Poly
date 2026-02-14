@@ -165,9 +165,19 @@ export function evaluateScalpEntry(
   minGap: number,
   entryMin: number,
   entryMax: number,
+  exitWindowSecs: number,
 ): ScalpEntrySignal | null {
-  if (secondsRemaining < 180) return null;
   if (btcPrice <= 0) return null;
+
+  // Time guard: need enough time to profit + exit.
+  // Near midpoint ($0.40-0.60), prices are volatile and unpredictable.
+  // At extremes ($0.15 or $0.85), direction is more committed and needs less time.
+  // minTimeNeeded = exitWindow + buffer that scales with midpoint proximity.
+  const buyPrice = noPrice > yesPrice ? noPrice : yesPrice; // side we'd buy
+  const distFromMid = Math.abs(buyPrice - 0.50); // 0 = midpoint, 0.35 = extreme
+  const midpointRisk = Math.max(0, 1 - distFromMid * 4); // 1.0 at 0.50, 0 at 0.75+
+  const minTimeNeeded = exitWindowSecs + 60 + Math.round(midpointRisk * 300); // exit + 60s base + up to 300s at midpoint
+  if (secondsRemaining < minTimeNeeded) return null;
 
   const fair = computeFairValue(
     yesPrice, noPrice, btcDelta, btcPrice,

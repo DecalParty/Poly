@@ -122,12 +122,12 @@ export default function ScalpPanel({ activeMarkets, scalp, settings, recentOutco
           <div className="mt-2 space-y-0.5">
             <div className="flex items-center justify-between">
               <span className="text-[9px] text-gray-600">Fair</span>
-              <span className="mono text-[10px] text-gray-400">${scalp.fairValue.up.toFixed(2)}</span>
+              <span className="mono text-[10px] text-gray-400">${scalp.fairValue.up.toFixed(3)}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-[9px] text-gray-600">Gap</span>
               <span className={`mono text-[10px] font-semibold ${upGap >= settings.scalpMinGap ? "text-emerald-400" : "text-gray-600"}`}>
-                {upGap >= 0 ? "+" : ""}{upGap.toFixed(2)}
+                {upGap >= 0 ? "+" : ""}{(upGap * 100).toFixed(1)}c
               </span>
             </div>
           </div>
@@ -149,12 +149,12 @@ export default function ScalpPanel({ activeMarkets, scalp, settings, recentOutco
           <div className="mt-2 space-y-0.5">
             <div className="flex items-center justify-between">
               <span className="text-[9px] text-gray-600">Fair</span>
-              <span className="mono text-[10px] text-gray-400">${scalp.fairValue.down.toFixed(2)}</span>
+              <span className="mono text-[10px] text-gray-400">${scalp.fairValue.down.toFixed(3)}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-[9px] text-gray-600">Gap</span>
               <span className={`mono text-[10px] font-semibold ${downGap >= settings.scalpMinGap ? "text-red-400" : "text-gray-600"}`}>
-                {downGap >= 0 ? "+" : ""}{downGap.toFixed(2)}
+                {downGap >= 0 ? "+" : ""}{(downGap * 100).toFixed(1)}c
               </span>
             </div>
           </div>
