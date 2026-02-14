@@ -1,1 +1,1 @@
-{"version":1,"functions":{"/api/bot/status":{},"/api/settings":{},"/api/setup/test":{},"/api/trades":{},"/api/stats":{},"/api/stream":{},"/api/outcomes":{}}}
+{"version":1,"functions":{"/api/outcomes":{},"/api/setup/test":{},"/api/bot/status":{},"/api/settings":{},"/api/stats":{},"/api/trades":{},"/api/stream":{}}}
