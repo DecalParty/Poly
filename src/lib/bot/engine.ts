@@ -100,7 +100,6 @@ let cooldownUntilWindow = 0;
 let lastEntryEvalTime = 0;
 let lastScalpTradeTime = 0; // timestamp of last sell  for post-trade cooldown
 let prevBestGap = 0; // previous eval's best gap  for freshness check
-let consecutiveGapHits = 0; // how many consecutive eval cycles showed a valid gap
 const ENTRY_EVAL_INTERVAL_MS = 500; // 500ms -- catch fast gaps
 
 // Circuit breaker
@@ -896,17 +895,11 @@ async function tradingLoop() {
             settings.scalpMinGap, settings.scalpEntryMin, settings.scalpEntryMax,
             settings.scalpExitWindow,
             lastScalpTradeTime, prevBestGap,
-            consecutiveGapHits,
           );
 
-          // Track gap for freshness check + persistence counter
+          // Track gap for freshness check
           const fairNow = computeFairValue(market.yesPrice, market.noPrice, btcDelta30, btcPrice, trend.direction, trend.strength, market.secondsRemaining);
           prevBestGap = Math.max(fairNow.up - market.yesPrice, fairNow.down - market.noPrice);
-          if (prevBestGap >= settings.scalpMinGap) {
-            consecutiveGapHits++;
-          } else {
-            consecutiveGapHits = 0;
-          }
 
           // Diagnostic log every 15s
           const diagKey = `_diag_${market.asset}`;

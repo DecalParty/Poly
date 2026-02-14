@@ -168,7 +168,6 @@ export function evaluateScalpEntry(
   exitWindowSecs: number,
   lastTradeTime: number,
   prevGap: number,
-  consecutiveGapHits: number,
 ): ScalpEntrySignal | null {
   if (btcPrice <= 0) return null;
 
@@ -206,10 +205,6 @@ export function evaluateScalpEntry(
   const downValid = downGap >= minGap && downGap <= MAX_GAP && noPrice >= entryMin && noPrice <= entryMax;
 
   if (!upValid && !downValid) return null;
-
-  // Guard 6: Gap persistence -- require gap to exist for 2+ consecutive eval cycles.
-  // Real moves persist across cycles; noise doesn't. Filters false positives.
-  if (consecutiveGapHits < 2) return null;
 
   const trendStr = trendDirection > 0 ? "UP" : trendDirection < 0 ? "DN" : "--";
 
