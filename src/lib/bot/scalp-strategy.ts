@@ -277,17 +277,6 @@ export function evaluateScalpExit(
     };
   }
 
-  // Soft stop-loss: cut at 3x profit target drawdown to prevent one bad trade
-  // from wiping out multiple small wins.
-  const stopThreshold = profitTarget * 3;
-  if (pnl <= -stopThreshold) {
-    return {
-      action: "sell_loss",
-      sellPrice: currentPrice,
-      reason: `Stop loss: $${currentPrice.toFixed(2)} = ${pnl.toFixed(2)} from entry $${entryPrice.toFixed(2)} (>${stopThreshold.toFixed(2)} drawdown)`,
-    };
-  }
-
   // Exit window: sell all positions at configured time before window end
   if (secondsRemaining <= exitWindowSecs) {
     return {
