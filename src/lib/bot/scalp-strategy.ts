@@ -1,92 +1,75 @@
 /**
  * Scalp Strategy -- Unreflected Move Detection
  *
- * The edge: Polymarket prices lag behind BTC movements by a few seconds.
- * When BTC moves, the YES/NO prices should adjust proportionally.
- * If they haven't adjusted yet, there's a gap we can exploit.
+ * The edge: BTC moves, Polymarket lags by 1-3 seconds.
+ * Detect recent BTC movement that the market hasn't priced yet.
+ * Buy the underpriced side, exit when market catches up.
  *
- * Key insight: We don't need to predict where BTC is going.
- * We just need to detect when the market hasn't caught up to where BTC IS.
+ * This is fast trading: 
+ * - Look at last 3-5 seconds of BTC movement
+ * - If BTC moved $15+ and market hasn't reacted, buy
+ * - Exit at 2 cent profit
+ * - Repeat multiple times per window
  *
- * Formula:
- * 1. Calculate how much YES/NO prices SHOULD have moved based on recent BTC change
- * 2. Compare to how much they ACTUALLY moved
- * 3. The difference is the gap
- *
- * Goal: 2 cent profit per trade, multiple trades per window = $1-4/window
+ * Goal: Many small 2 cent wins adding up to $1-4/window
  */
 
 import { getWindowOpenPrice, getBtcDelta, getBinancePrice } from "../prices/binance-ws";
 
+// -- Configuration ------------------------------------------------------------
+
+// Minimum BTC movement (in $) to trigger a trade
+const MIN_BTC_MOVE = 12;
+
+// Time window for detecting unreflected moves (ms)
+const DETECTION_WINDOW_MS = 4000; // 4 seconds
+
 // How much should YES/NO prices move per $1 of BTC movement?
-// Empirically, a $50 BTC move typically causes ~2-3 cent YES/NO move
-// So roughly 0.0005 per $1 (0.05 cents per $1)
-const PRICE_SENSITIVITY = 0.0005;
+// $50 BTC move typically causes ~2-3 cent YES/NO move
+const PRICE_SENSITIVITY = 0.0004; // 0.04 cents per $1
 
-// Minimum BTC movement (in $) to consider (filters noise)
-const MIN_BTC_MOVE = 8;
-
-// Time windows for detecting unreflected moves
-const FAST_WINDOW_MS = 3000;  // 3 seconds - very recent, likely unreflected
-const SLOW_WINDOW_MS = 15000; // 15 seconds - should be reflected by now
+// -- Fair Value Calculation ---------------------------------------------------
 
 /**
- * Calculate expected YES/NO price change based on BTC movement.
- * 
- * Logic:
- * - BTC moved $X in the last few seconds
- * - YES/NO should move proportionally
- * - If BTC up $50, YES should be up ~2.5 cents
+ * Calculate expected price shift based on recent BTC movement.
  */
-function expectedPriceChange(btcMove: number): number {
-  return btcMove * PRICE_SENSITIVITY;
+function expectedPriceShift(btcMove: number): number {
+  return Math.abs(btcMove) * PRICE_SENSITIVITY;
 }
 
 /**
  * Compute fair value based on unreflected BTC movement.
- * 
- * The key insight:
- * - Fast BTC movement (last 3s) may not be reflected yet
- * - Slower movement (last 15s) should already be priced in
- * - The difference tells us how much is "unreflected"
  */
 export function computeFairValue(
   yesPrice: number,
   noPrice: number,
-  btcDelta: number,      // Not used - we get fresh deltas
+  btcDelta: number,
   btcPrice: number,
   trendDirection: number,
   trendStrength: number,
   secondsRemaining: number,
 ): { up: number; down: number } {
-  // Get BTC movement over different time windows
-  const fastMove = getBtcDelta(FAST_WINDOW_MS);  // Last 3s
-  const slowMove = getBtcDelta(SLOW_WINDOW_MS);  // Last 15s
+  // Get recent BTC movement
+  const recentMove = getBtcDelta(DETECTION_WINDOW_MS);
   
-  // The "unreflected" portion is roughly the fast move
-  // (since slow moves should already be priced in)
-  const unreflectedMove = fastMove;
-  
-  // If BTC hasn't moved enough recently, no edge
-  if (Math.abs(unreflectedMove) < MIN_BTC_MOVE) {
+  // If BTC hasn't moved enough, no edge
+  if (Math.abs(recentMove) < MIN_BTC_MOVE) {
     return { up: yesPrice, down: noPrice };
   }
   
-  // Calculate expected price shift from unreflected move
-  const expectedShift = expectedPriceChange(unreflectedMove);
+  const shift = expectedPriceShift(recentMove);
   
-  // Direction: positive BTC move = YES should be higher
-  if (unreflectedMove > 0) {
-    // BTC moved UP recently - YES should be higher than it is
+  if (recentMove > 0) {
+    // BTC moved UP - YES should be higher
     return {
-      up: Math.min(0.99, yesPrice + Math.abs(expectedShift)),
-      down: Math.max(0.01, noPrice - Math.abs(expectedShift)),
+      up: Math.min(0.99, yesPrice + shift),
+      down: Math.max(0.01, noPrice - shift),
     };
   } else {
-    // BTC moved DOWN recently - NO should be higher than it is
+    // BTC moved DOWN - NO should be higher
     return {
-      up: Math.max(0.01, yesPrice - Math.abs(expectedShift)),
-      down: Math.min(0.99, noPrice + Math.abs(expectedShift)),
+      up: Math.max(0.01, yesPrice - shift),
+      down: Math.min(0.99, noPrice + shift),
     };
   }
 }
@@ -101,6 +84,10 @@ export interface ScalpEntrySignal {
   reason: string;
 }
 
+/**
+ * Evaluate entry for scalp strategy.
+ * Looks for unreflected recent BTC moves.
+ */
 export function evaluateScalpEntry(
   yesPrice: number,
   noPrice: number,
@@ -119,17 +106,20 @@ export function evaluateScalpEntry(
 ): ScalpEntrySignal | null {
   if (btcPrice <= 0) return null;
 
-  // Guard 1: don't enter if we'd have to exit immediately
+  // Guard 1: Don't enter if we'd have to exit immediately
   if (secondsRemaining <= exitWindowSecs) return null;
 
-  // Guard 2: Post-trade cooldown -- 5s after any trade (fast for scalping)
+  // Guard 2: Post-trade cooldown -- 5s for fast scalping
   const now = Date.now();
   if (lastTradeTime > 0 && now - lastTradeTime < 5_000) return null;
 
   // Get recent BTC movement
-  const fastMove = getBtcDelta(FAST_WINDOW_MS);
+  const recentMove = getBtcDelta(DETECTION_WINDOW_MS);
   
-  // Compute fair value based on unreflected movement
+  // Guard 3: Need minimum BTC movement
+  if (Math.abs(recentMove) < MIN_BTC_MOVE) return null;
+
+  // Compute fair value
   const fair = computeFairValue(
     yesPrice, noPrice, btcDelta30s, btcPrice,
     trendDirection, trendStrength, secondsRemaining
@@ -138,15 +128,13 @@ export function evaluateScalpEntry(
   const upGap = fair.up - yesPrice;
   const downGap = fair.down - noPrice;
 
-  // Check if either side has a tradeable gap
   const upValid = upGap >= minGap && yesPrice >= entryMin && yesPrice <= entryMax;
   const downValid = downGap >= minGap && noPrice >= entryMin && noPrice <= entryMax;
 
   if (!upValid && !downValid) return null;
 
-  // Build reason string
-  const moveDir = fastMove > 0 ? "+" : "";
-  const moveStr = `BTC ${moveDir}$${fastMove.toFixed(0)} (3s)`;
+  const moveDir = recentMove > 0 ? "+" : "";
+  const moveStr = `BTC ${moveDir}$${recentMove.toFixed(0)} (${DETECTION_WINDOW_MS/1000}s)`;
 
   if (upValid && (!downValid || upGap >= downGap)) {
     return {
@@ -154,7 +142,7 @@ export function evaluateScalpEntry(
       fairValue: fair.up,
       actualPrice: yesPrice,
       gap: upGap,
-      reason: `${moveStr} | YES $${yesPrice.toFixed(2)} -> $${fair.up.toFixed(2)} (+${(upGap * 100).toFixed(1)}c)`,
+      reason: `[SCALP] ${moveStr} | YES $${yesPrice.toFixed(2)} -> $${fair.up.toFixed(2)} (+${(upGap * 100).toFixed(1)}c)`,
     };
   }
 
@@ -164,7 +152,7 @@ export function evaluateScalpEntry(
       fairValue: fair.down,
       actualPrice: noPrice,
       gap: downGap,
-      reason: `${moveStr} | NO $${noPrice.toFixed(2)} -> $${fair.down.toFixed(2)} (+${(downGap * 100).toFixed(1)}c)`,
+      reason: `[SCALP] ${moveStr} | NO $${noPrice.toFixed(2)} -> $${fair.down.toFixed(2)} (+${(downGap * 100).toFixed(1)}c)`,
     };
   }
 
@@ -182,11 +170,8 @@ export interface ScalpExitSignal {
 }
 
 /**
- * Evaluate exit conditions.
- *
- * Two exits:
- * - Profit target hit (2 cents) -> sell immediately
- * - Exit window reached -> sell everything at whatever price
+ * Evaluate exit for scalp strategy.
+ * Quick exits - don't hold to resolution.
  */
 export function evaluateScalpExit(
   entryPrice: number,
@@ -205,18 +190,18 @@ export function evaluateScalpExit(
     return {
       action: "sell_profit",
       sellPrice: currentPrice,
-      reason: `TARGET: +${(pnl * 100).toFixed(1)}c`,
+      reason: `[SCALP] TARGET: +${(pnl * 100).toFixed(1)}c`,
     };
   }
 
-  // Exit window: sell all positions at configured time before window end
+  // Exit window
   if (secondsRemaining <= exitWindowSecs) {
     return {
       action: pnl >= 0 ? "sell_profit" : "sell_loss",
       sellPrice: currentPrice,
-      reason: `EXIT: ${pnl >= 0 ? "+" : ""}${(pnl * 100).toFixed(1)}c, ${secondsRemaining}s left`,
+      reason: `[SCALP] EXIT: ${pnl >= 0 ? "+" : ""}${(pnl * 100).toFixed(1)}c`,
     };
   }
 
-  return { action: "hold", reason: `HOLD: ${pnl >= 0 ? "+" : ""}${(pnl * 100).toFixed(1)}c` };
+  return { action: "hold", reason: `[SCALP] HOLD: ${pnl >= 0 ? "+" : ""}${(pnl * 100).toFixed(1)}c` };
 }

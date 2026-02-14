@@ -50,7 +50,7 @@ export interface BotSettings {
   arbCancelBeforeEnd: number;
   arbMarket: MarketAsset;
 
-  // Scalp strategy
+  // Scalp strategy (fast, unreflected moves)
   scalpEnabled: boolean;
   scalpTradeSize: number;
   scalpMaxPositions: number;
@@ -60,6 +60,17 @@ export interface BotSettings {
   scalpEntryMax: number;
   scalpExitWindow: number;
   scalpHalfSizeAfter: number;
+
+  // Value strategy (late-window fair probability)
+  valueEnabled: boolean;
+  valueTradeSize: number;
+  valueMaxPositions: number;
+  valueMinGap: number;
+  valueProfitTarget: number;
+  valueEntryMin: number;
+  valueEntryMax: number;
+  valueExitWindow: number;
+  valueMaxSecondsRemaining: number; // Only enter when less than X seconds left
 }
 
 export const DEFAULT_SETTINGS: BotSettings = {
@@ -96,11 +107,21 @@ export const DEFAULT_SETTINGS: BotSettings = {
   scalpTradeSize: 12,
   scalpMaxPositions: 2,
   scalpMinGap: 0.02,
-  scalpProfitTarget: 0.03,
+  scalpProfitTarget: 0.02,
   scalpEntryMin: 0.15,
   scalpEntryMax: 0.85,
   scalpExitWindow: 120,
   scalpHalfSizeAfter: 420,
+
+  valueEnabled: true,
+  valueTradeSize: 15,
+  valueMaxPositions: 1,
+  valueMinGap: 0.03,
+  valueProfitTarget: 0.03,
+  valueEntryMin: 0.20,
+  valueEntryMax: 0.80,
+  valueExitWindow: 60,
+  valueMaxSecondsRemaining: 480, // Only enter with 8 min or less left
 };
 
 // ------ Market Data --------------------------------------------------------------------------------------------------------------------------

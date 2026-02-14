@@ -6,6 +6,7 @@ import {
   getSecondsRemaining,
 } from "../polymarket/markets";
 import { computeFairValue, evaluateScalpEntry, evaluateScalpExit } from "./scalp-strategy";
+import { evaluateValueEntry, evaluateValueExit } from "./value-strategy";
 import { recordResolution } from "./executor";
 import { insertTrade } from "../db/queries";
 import { getSettings, getCumulativePnl, getTotalTradeCount, getTodayPnl, getConsecutiveLosses, getConsecutiveWins, getTodayLossCount, getRecentTradeConditionIds } from "../db/queries";
@@ -95,10 +96,12 @@ interface PendingBuy {
 }
 
 const scalpPositions: ScalpPos[] = [];
+const valuePositions: ScalpPos[] = []; // Value strategy positions (same structure)
 const pendingBuys: PendingBuy[] = [];
 let cooldownUntilWindow = 0;
 let lastEntryEvalTime = 0;
-let lastScalpTradeTime = 0; // timestamp of last sell  for post-trade cooldown
+let lastScalpTradeTime = 0; // timestamp of last scalp sell
+let lastValueTradeTime = 0; // timestamp of last value sell
 let prevBestGap = 0; // previous eval's best gap  for freshness check
 const ENTRY_EVAL_INTERVAL_MS = 500; // 500ms -- catch fast gaps
 
@@ -211,7 +214,7 @@ function ensurePriceBroadcast() {
           windowOpenPrice: getWindowOpenPrice(),
           btcChangePercent: btcChange,
           fairValue: fair,
-          positions: scalpPositions.map(posToState),
+          positions: [...scalpPositions.map(posToState), ...valuePositions.map(posToState)],
           pendingBuys: pendingBuys.map(buyToState),
           cooldownUntil: cooldownUntilWindow,
         } as ScalpData,
@@ -308,6 +311,7 @@ function addAlert(severity: AlertItem["severity"], message: string, asset?: Mark
 function getCapitalState(settings: BotSettings): CapitalState {
   let deployed = 0;
   for (const p of scalpPositions) deployed += p.costBasis;
+  for (const p of valuePositions) deployed += p.costBasis;
   for (const b of pendingBuys) deployed += b.price * b.size;
 
   const todayPnl = getTodayPnl();
@@ -855,7 +859,110 @@ async function tradingLoop() {
       }
     }
 
-    // ---- 3. Evaluate new scalp entries (every 5s) ----
+    // ---- 2b. Manage active VALUE positions ----
+    for (let i = valuePositions.length - 1; i >= 0; i--) {
+      const pos = valuePositions[i];
+      const am = getActiveMarketForAsset(pos.asset);
+      const currentPrice = pos.side === "yes" ? (am?.yesPrice ?? pos.entryPrice) : (am?.noPrice ?? pos.entryPrice);
+      const secsRemaining = am?.secondsRemaining ?? 0;
+      const openPrice = getWindowOpenPrice();
+      const btcChangePct = openPrice > 0 ? ((getBinancePrice() - openPrice) / openPrice) * 100 : 0;
+
+      const exitSignal = evaluateValueExit(
+        pos.entryPrice, currentPrice, btcChangePct, pos.side,
+        secsRemaining, settings.valueProfitTarget, settings.valueExitWindow
+      );
+
+      if (exitSignal.action === "sell_profit" || exitSignal.action === "sell_loss") {
+        if (pos.sellOrderId && !settings.paperTrading) {
+          try { await cancelOrder(pos.sellOrderId); } catch {}
+        }
+
+        const sellPrice = exitSignal.sellPrice || currentPrice;
+        const pnl = pos.shares * sellPrice - pos.costBasis;
+
+        if (!settings.paperTrading && am) {
+          await placeSellOrder(pos.tokenId, sellPrice, pos.shares, am.tickSize, am.negRisk);
+        }
+
+        insertTrade({
+          timestamp: new Date().toISOString(),
+          conditionId: pos.conditionId,
+          slug: pos.slug,
+          side: pos.side,
+          action: "sell",
+          price: sellPrice,
+          amount: pos.shares * sellPrice,
+          shares: pos.shares,
+          pnl,
+          paper: settings.paperTrading,
+          orderId: null,
+          asset: pos.asset,
+          subStrategy: "scalp",
+          binancePriceAtEntry: null,
+          slippage: null,
+          takerFee: 0,
+        });
+
+        broadcastLog(`${exitSignal.reason} | P&L: $${pnl.toFixed(4)}`);
+        addAlert(pnl >= 0 ? "success" : "warning", `Value ${pnl >= 0 ? "profit" : "exit"} @ $${sellPrice.toFixed(2)}`, pos.asset);
+
+        lastValueTradeTime = now;
+        valuePositions.splice(i, 1);
+        continue;
+      } else if (exitSignal.action === "hold_resolution") {
+        // Hold to resolution
+        if (secsRemaining <= 0) {
+          const cachedMarket = marketInfoCache.get(pos.conditionId);
+          if (cachedMarket) {
+            let resolvedSide = await fetchMarketResolution(pos.slug);
+            if (resolvedSide === null) resolvedSide = await fetchClobResolution(cachedMarket);
+            if (resolvedSide !== null) {
+              const won = pos.side === resolvedSide;
+              const resolutionPrice = won ? 1.0 : 0.0;
+              const pnl = pos.shares * resolutionPrice - pos.costBasis;
+
+              insertTrade({
+                timestamp: new Date().toISOString(),
+                conditionId: pos.conditionId,
+                slug: pos.slug,
+                side: pos.side,
+                action: "resolution",
+                price: resolutionPrice,
+                amount: pos.shares * resolutionPrice,
+                shares: pos.shares,
+                pnl,
+                paper: settings.paperTrading,
+                orderId: null,
+                asset: pos.asset,
+                subStrategy: "scalp",
+                binancePriceAtEntry: null,
+                slippage: null,
+                takerFee: null,
+              });
+
+              markOutcomeResolved(pos.slug, resolvedSide === "yes" ? "up" : "down");
+              broadcastLog(`[VALUE] Resolution: ${pos.side.toUpperCase()} ${won ? "WON" : "LOST"} | P&L: $${pnl.toFixed(4)}`);
+              addAlert(won ? "success" : "warning", `Value ${won ? "WON" : "LOST"}: $${pnl.toFixed(4)}`, pos.asset);
+
+              if (!settings.paperTrading && won) {
+                pendingClaims.push({
+                  conditionId: cachedMarket.conditionId,
+                  negRisk: cachedMarket.negRisk,
+                  asset: pos.asset,
+                  attempts: 0,
+                  nextAttempt: now + 5000,
+                });
+              }
+
+              valuePositions.splice(i, 1);
+            }
+          }
+        }
+      }
+    }
+
+    // ---- 3. Evaluate new scalp entries (every 500ms) ----
     if (now - lastEntryEvalTime >= ENTRY_EVAL_INTERVAL_MS) {
       lastEntryEvalTime = now;
 
@@ -871,31 +978,32 @@ async function tradingLoop() {
         for (const market of activeMarkets) {
           if (!settings.enabledAssets.includes(market.asset)) continue;
 
-          // Check position limits
-          const positionsForAsset = scalpPositions.filter(p => p.conditionId === market.conditionId).length;
-          const pendingForAsset = pendingBuys.filter(b => b.conditionId === market.conditionId).length;
-          if (positionsForAsset + pendingForAsset >= settings.scalpMaxPositions) continue;
-
-          // Check capital
-          const capital = getCapitalState(settings);
-          const effectiveTradeSize = market.secondsRemaining <= settings.scalpHalfSizeAfter
-            ? settings.scalpTradeSize / 2
-            : settings.scalpTradeSize;
-          if (capital.available < effectiveTradeSize) continue;
-
           const btcDelta30 = getBtcDelta(30_000);
           const btcDelta5 = getBtcDelta(5_000);
           const btcPrice = getBinancePrice();
           const trend = getBtcTrend(30 * 60_000);
-          const signal = evaluateScalpEntry(
-            market.yesPrice, market.noPrice,
-            btcDelta30, btcDelta5, btcPrice,
-            trend.direction, trend.strength,
-            market.secondsRemaining,
-            settings.scalpMinGap, settings.scalpEntryMin, settings.scalpEntryMax,
-            settings.scalpExitWindow,
-            lastScalpTradeTime, prevBestGap,
-          );
+
+          // ---- SCALP STRATEGY ENTRY ----
+          if (settings.scalpEnabled) {
+            // Check position limits
+            const positionsForAsset = scalpPositions.filter(p => p.conditionId === market.conditionId).length;
+            const pendingForAsset = pendingBuys.filter(b => b.conditionId === market.conditionId).length;
+            if (positionsForAsset + pendingForAsset < settings.scalpMaxPositions) {
+              // Check capital
+              const capital = getCapitalState(settings);
+              const effectiveTradeSize = market.secondsRemaining <= settings.scalpHalfSizeAfter
+                ? settings.scalpTradeSize / 2
+                : settings.scalpTradeSize;
+              if (capital.available >= effectiveTradeSize) {
+                const signal = evaluateScalpEntry(
+                  market.yesPrice, market.noPrice,
+                  btcDelta30, btcDelta5, btcPrice,
+                  trend.direction, trend.strength,
+                  market.secondsRemaining,
+                  settings.scalpMinGap, settings.scalpEntryMin, settings.scalpEntryMax,
+                  settings.scalpExitWindow,
+                  lastScalpTradeTime, prevBestGap,
+                );
 
           // Track gap for freshness check
           const fairNow = computeFairValue(market.yesPrice, market.noPrice, btcDelta30, btcPrice, trend.direction, trend.strength, market.secondsRemaining);
@@ -1026,6 +1134,133 @@ async function tradingLoop() {
 
             lastAction = `Scalp signal: ${signal.side.toUpperCase()} @ $${signal.actualPrice.toFixed(2)}`;
             lastActionTime = new Date().toISOString();
+          }
+              }
+            }
+          } // end scalpEnabled
+
+          // ---- VALUE STRATEGY ENTRY ----
+          if (settings.valueEnabled) {
+            const valuePositionsForAsset = valuePositions.filter(p => p.conditionId === market.conditionId).length;
+            if (valuePositionsForAsset < settings.valueMaxPositions) {
+              const valueCapital = getCapitalState(settings);
+              if (valueCapital.available >= settings.valueTradeSize) {
+                const valueSignal = evaluateValueEntry(
+                  market.yesPrice, market.noPrice, btcPrice,
+                  market.secondsRemaining,
+                  settings.valueMinGap, settings.valueEntryMin, settings.valueEntryMax,
+                  settings.valueMaxSecondsRemaining, settings.valueExitWindow,
+                  lastValueTradeTime,
+                );
+
+                if (valueSignal) {
+                  const tokenId = valueSignal.side === "yes" ? market.yesTokenId : market.noTokenId;
+                  const shares = Math.floor((settings.valueTradeSize / valueSignal.actualPrice) * 100) / 100;
+                  const windowTs = parseInt(market.slug.split("-").pop() || "0", 10);
+
+                  if (settings.paperTrading) {
+                    const posId = `value-paper-${Date.now()}`;
+                    const sellTarget = Math.min(0.99, Math.round((valueSignal.actualPrice + settings.valueProfitTarget) * 100) / 100);
+
+                    insertTrade({
+                      timestamp: new Date().toISOString(),
+                      conditionId: market.conditionId,
+                      slug: market.slug,
+                      side: valueSignal.side,
+                      action: "buy",
+                      price: valueSignal.actualPrice,
+                      amount: settings.valueTradeSize,
+                      shares,
+                      pnl: null,
+                      paper: true,
+                      orderId: posId,
+                      asset: market.asset,
+                      subStrategy: "scalp", // Using same type for now
+                      binancePriceAtEntry: getBinancePrice(),
+                      slippage: null,
+                      takerFee: 0,
+                    });
+
+                    valuePositions.push({
+                      id: posId,
+                      conditionId: market.conditionId,
+                      slug: market.slug,
+                      asset: market.asset,
+                      side: valueSignal.side,
+                      tokenId,
+                      entryPrice: valueSignal.actualPrice,
+                      shares,
+                      costBasis: settings.valueTradeSize,
+                      sellPrice: sellTarget,
+                      sellOrderId: null,
+                      buyOrderId: posId,
+                      entryTime: now,
+                      windowEndTs: windowTs,
+                    });
+                    marketInfoCache.set(market.conditionId, market.market);
+
+                    broadcastLog(`[PAPER] ${valueSignal.reason}`);
+                    addAlert("info", `Value buy: ${valueSignal.side.toUpperCase()} @ $${valueSignal.actualPrice.toFixed(2)}`, market.asset);
+                  } else {
+                    // Live value trade
+                    broadcastLog(`[LIVE VALUE] Attempting: ${valueSignal.side.toUpperCase()} ${shares.toFixed(2)} @ $${valueSignal.actualPrice.toFixed(2)}`);
+                    try {
+                      const result = await placeBuyOrder(tokenId, valueSignal.actualPrice, shares, market.tickSize, market.negRisk);
+                      if (result.success && result.orderId) {
+                        const fillPrice = result.filledPrice || valueSignal.actualPrice;
+                        const fillShares = result.filledSize || shares;
+                        const sellTarget = Math.min(0.99, Math.round((fillPrice + settings.valueProfitTarget) * 100) / 100);
+
+                        valuePositions.push({
+                          id: result.orderId,
+                          conditionId: market.conditionId,
+                          slug: market.slug,
+                          asset: market.asset,
+                          side: valueSignal.side,
+                          tokenId,
+                          entryPrice: fillPrice,
+                          shares: fillShares,
+                          costBasis: fillShares * fillPrice,
+                          sellPrice: sellTarget,
+                          sellOrderId: null,
+                          buyOrderId: result.orderId,
+                          entryTime: now,
+                          windowEndTs: windowTs,
+                        });
+                        marketInfoCache.set(market.conditionId, market.market);
+
+                        insertTrade({
+                          timestamp: new Date().toISOString(),
+                          conditionId: market.conditionId,
+                          slug: market.slug,
+                          side: valueSignal.side,
+                          action: "buy",
+                          price: fillPrice,
+                          amount: fillShares * fillPrice,
+                          shares: fillShares,
+                          pnl: null,
+                          paper: false,
+                          orderId: result.orderId,
+                          asset: market.asset,
+                          subStrategy: "scalp",
+                          binancePriceAtEntry: getBinancePrice(),
+                          slippage: fillPrice - valueSignal.actualPrice,
+                          takerFee: 0,
+                        });
+
+                        broadcastLog(`[VALUE] FILLED: ${valueSignal.side.toUpperCase()} ${fillShares.toFixed(1)} @ $${fillPrice.toFixed(2)}`);
+                        addAlert("info", `Value buy: ${valueSignal.side.toUpperCase()} @ $${fillPrice.toFixed(2)}`, market.asset);
+                      } else {
+                        broadcastLog(`[VALUE] FAILED: ${result.error || "unknown"}`);
+                      }
+                    } catch (buyErr) {
+                      const errMsg = buyErr instanceof Error ? buyErr.message : String(buyErr);
+                      broadcastLog(`[VALUE] Exception: ${errMsg}`);
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       } // end binanceFresh else

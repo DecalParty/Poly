@@ -357,11 +357,20 @@ export function getSettings(): BotSettings {
     scalpTradeSize: (row as any).scalpTradeSize ?? 12,
     scalpMaxPositions: (row as any).scalpMaxPositions ?? 2,
     scalpMinGap: (row as any).scalpMinGap ?? 0.02,
-    scalpProfitTarget: (row as any).scalpProfitTarget ?? 0.03,
+    scalpProfitTarget: (row as any).scalpProfitTarget ?? 0.02,
     scalpEntryMin: (row as any).scalpEntryMin ?? 0.15,
     scalpEntryMax: (row as any).scalpEntryMax ?? 0.85,
     scalpExitWindow: (row as any).scalpExitWindow ?? 120,
     scalpHalfSizeAfter: (row as any).scalpHalfSizeAfter ?? 420,
+    valueEnabled: (row as any).valueEnabled ?? true,
+    valueTradeSize: (row as any).valueTradeSize ?? 15,
+    valueMaxPositions: (row as any).valueMaxPositions ?? 1,
+    valueMinGap: (row as any).valueMinGap ?? 0.03,
+    valueProfitTarget: (row as any).valueProfitTarget ?? 0.03,
+    valueEntryMin: (row as any).valueEntryMin ?? 0.20,
+    valueEntryMax: (row as any).valueEntryMax ?? 0.80,
+    valueExitWindow: (row as any).valueExitWindow ?? 60,
+    valueMaxSecondsRemaining: (row as any).valueMaxSecondsRemaining ?? 480,
   };
 }
 
@@ -397,6 +406,15 @@ export function updateSettings(s: Partial<BotSettings>): BotSettings {
   if (s.scalpEntryMax !== undefined) setObj.scalpEntryMax = s.scalpEntryMax;
   if (s.scalpExitWindow !== undefined) setObj.scalpExitWindow = s.scalpExitWindow;
   if ((s as any).scalpHalfSizeAfter !== undefined) (setObj as any).scalpHalfSizeAfter = (s as any).scalpHalfSizeAfter;
+  if (s.valueEnabled !== undefined) (setObj as any).valueEnabled = s.valueEnabled;
+  if (s.valueTradeSize !== undefined) (setObj as any).valueTradeSize = s.valueTradeSize;
+  if (s.valueMaxPositions !== undefined) (setObj as any).valueMaxPositions = s.valueMaxPositions;
+  if (s.valueMinGap !== undefined) (setObj as any).valueMinGap = s.valueMinGap;
+  if (s.valueProfitTarget !== undefined) (setObj as any).valueProfitTarget = s.valueProfitTarget;
+  if (s.valueEntryMin !== undefined) (setObj as any).valueEntryMin = s.valueEntryMin;
+  if (s.valueEntryMax !== undefined) (setObj as any).valueEntryMax = s.valueEntryMax;
+  if (s.valueExitWindow !== undefined) (setObj as any).valueExitWindow = s.valueExitWindow;
+  if (s.valueMaxSecondsRemaining !== undefined) (setObj as any).valueMaxSecondsRemaining = s.valueMaxSecondsRemaining;
 
   if (Object.keys(setObj).length > 0) {
     db.update(schema.settings)
