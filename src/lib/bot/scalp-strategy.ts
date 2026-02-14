@@ -1,125 +1,113 @@
 /**
- * Scalp Strategy -- Simple Fair Value
+ * Scalp Strategy -- Volatility-Adjusted Fair Value
  *
- * SIMPLIFIED: Uses actual BTC % change from window open (fetched from Binance API)
- * to compute fair value. No projections, no derived opens, no velocity extrapolation.
+ * Better model that accounts for BTC's actual behavior:
+ * 
+ * 1. BTC swings a lot � a 0.05% move means nothing if typical 15-min volatility is 0.2%
+ * 2. Time matters � 0.05% lead with 2 min left is very different from 12 min left
+ * 3. Momentum matters � if BTC is moving at $5/sec, it will likely continue briefly
  *
- * Logic:
- * 1. Get actual BTC % change from window open
- * 2. Map it to fair value using the table
- * 3. Apply time decay (markets converge to fair value over time)
- * 4. If fair value > market price by minGap, buy
+ * The formula:
+ * - Calculate current position (BTC % from open)
+ * - Add velocity-based drift (momentum prediction)
+ * - Scale by remaining volatility (less time = less expected movement = more certainty)
+ * - Convert to probability using sigmoid
  *
- * This is what you'd do manually: "BTC is up 0.05% from open, so YES should be ~58%,
- * but it's only 52%, so buy YES."
+ * This properly captures: "BTC is 0.05% up with 3 min left, and moving up at $2/sec,
+ * so probability of UP winning is ~75%"
  */
 
 import { getWindowOpenPrice, getBinancePrice } from "../prices/binance-ws";
 
-// -- Fair Value Table ---------------------------------------------------------
-// Maps BTC % change from window open to fair probability of UP winning
-const FAIR_VALUE_TABLE = [
-  { change: 0.00000, value: 0.500 },  // 0% change = 50/50
-  { change: 0.00010, value: 0.520 },  // 0.01% ($9) -> 52%
-  { change: 0.00020, value: 0.540 },  // 0.02% ($18) -> 54%
-  { change: 0.00035, value: 0.570 },  // 0.035% ($31) -> 57%
-  { change: 0.00050, value: 0.600 },  // 0.05% ($45) -> 60%
-  { change: 0.00075, value: 0.650 },  // 0.075% ($67) -> 65%
-  { change: 0.00100, value: 0.700 },  // 0.10% ($90) -> 70%
-  { change: 0.00150, value: 0.780 },  // 0.15% ($135) -> 78%
-  { change: 0.00250, value: 0.860 },  // 0.25% ($225) -> 86%
-  { change: 0.00500, value: 0.940 },  // 0.50% ($450) -> 94%
-  { change: 0.01000, value: 0.990 },  // 1.0% ($900) -> 99%
-];
+// Typical BTC 15-minute volatility (standard deviation of % change)
+// Historical average is ~0.15% to 0.25% per 15 min. Using 0.15% = 0.0015
+const BASE_15MIN_VOL = 0.0015;
 
-function interpolate(absChange: number): number {
-  const table = FAIR_VALUE_TABLE;
-  if (absChange <= table[0].change) return table[0].value;
-  if (absChange >= table[table.length - 1].change) return table[table.length - 1].value;
-  for (let i = 1; i < table.length; i++) {
-    if (absChange <= table[i].change) {
-      const prev = table[i - 1];
-      const curr = table[i];
-      const t = (absChange - prev.change) / (curr.change - prev.change);
-      return prev.value + t * (curr.value - prev.value);
-    }
-  }
-  return table[table.length - 1].value;
-}
+// How much weight to give momentum (velocity-based drift)
+// Higher = more aggressive predictions based on recent movement
+const MOMENTUM_WEIGHT = 3.0; // seconds of projected movement to add
+
+// Sensitivity of the sigmoid � higher = sharper probability transitions
+const SIGMOID_SENSITIVITY = 2.5;
 
 /**
- * Time factor: how much weight to give the fair value.
- * Early in window (little elapsed): market hasn't had time to react, more opportunity.
- * Late in window (much elapsed): market has priced it in, less opportunity.
+ * Sigmoid function: maps any real number to (0, 1)
+ * Used to convert z-score to probability
  */
-function getTimeFactor(secondsRemaining: number): number {
-  const elapsed = Math.max(0, 900 - secondsRemaining);
-  // Linear: at 0s elapsed, factor = 0.2; at 900s elapsed, factor = 1.0
-  return 0.2 + 0.8 * (elapsed / 900);
+function sigmoid(x: number): number {
+  return 1 / (1 + Math.exp(-x));
 }
 
-// How many seconds ahead to project BTC price using recent velocity.
-// This is the predictive edge: if BTC moved $30 in the last 30s, project it
-// will move another $5 in the next 5 seconds.
-const LOOKAHEAD_SECONDS = 5;
+/**
+ * Calculate remaining volatility based on time left.
+ * Volatility scales with sqrt(time) � standard Brownian motion property.
+ */
+function getRemainingVol(secondsRemaining: number): number {
+  const remainingMinutes = secondsRemaining / 60;
+  const fractionRemaining = remainingMinutes / 15;
+  // Volatility scales with sqrt of time
+  return BASE_15MIN_VOL * Math.sqrt(Math.max(0.01, fractionRemaining));
+}
 
 /**
- * Compute fair values using BTC change + velocity projection.
+ * Compute fair value using volatility-adjusted probability model.
  *
- * The prediction logic:
- * 1. Get actual BTC % change from window open (current state)
- * 2. Calculate velocity from recent movement (btcDelta / 30s)
- * 3. Project BTC forward by LOOKAHEAD_SECONDS
- * 4. Compute fair value using PROJECTED change (this is the edge)
+ * Logic:
+ * 1. Current position = (btcPrice - openPrice) / openPrice
+ * 2. Add velocity drift = momentum prediction for next few seconds
+ * 3. Calculate z-score = position / remaining_volatility
+ * 4. Convert z-score to probability via sigmoid
  *
- * Why this works:
- * - Bitbo price leads Polymarket by 1-2 seconds
- * - Velocity projection adds another 5 seconds of expected movement
- * - Total: we're predicting where Polymarket SHOULD be in ~6-7 seconds
- * - If that's higher than current market price, we buy
+ * The z-score represents "how many standard deviations from break-even?"
+ * - z = 0 ? 50% (BTC at open)
+ * - z = 1 ? ~73% (BTC 1 std dev above open)
+ * - z = 2 ? ~88% (BTC 2 std devs above open)
+ *
+ * With low remaining volatility (late in window), small moves create large z-scores
+ * ? probability becomes more extreme ? fair value deviates more from 50%
  */
 export function computeFairValue(
   yesPrice: number,
   noPrice: number,
   btcDelta: number,      // BTC $ change over last 30s - used for velocity
   btcPrice: number,
-  trendDirection: number, // ignored for simplicity
-  trendStrength: number,  // ignored
+  trendDirection: number, // unused but kept for interface compatibility
+  trendStrength: number,  // unused
   secondsRemaining: number,
 ): { up: number; down: number } {
   const openPrice = getWindowOpenPrice();
 
   // Guard: need valid prices
-  if (btcPrice <= 0 || openPrice <= 0) {
+  if (btcPrice <= 0 || openPrice <= 0 || secondsRemaining <= 0) {
     return { up: yesPrice, down: noPrice };
   }
 
-  // Step 1: Calculate velocity from recent movement
+  // Step 1: Current position (% change from open)
+  const currentChange = (btcPrice - openPrice) / openPrice;
+
+  // Step 2: Calculate velocity and add momentum drift
   const velocity = btcDelta / 30; // $/sec
+  const velocityPct = velocity / openPrice; // velocity as % of price per second
+  const drift = velocityPct * MOMENTUM_WEIGHT; // projected additional movement
 
-  // Step 2: Project BTC forward using velocity
-  const projectedBtc = btcPrice + (velocity * LOOKAHEAD_SECONDS);
+  // Step 3: Adjusted position = current + drift
+  const adjustedChange = currentChange + drift;
 
-  // Step 3: Calculate projected % change from window open
-  const projectedChange = (projectedBtc - openPrice) / openPrice;
-  const absChange = Math.abs(projectedChange);
-  const isUp = projectedChange >= 0;
+  // Step 4: Calculate remaining volatility
+  const remainingVol = getRemainingVol(secondsRemaining);
 
-  // Step 4: Look up fair value from table
-  const rawFair = interpolate(absChange);
+  // Step 5: Z-score = adjusted position / remaining volatility
+  // This tells us "how many standard deviations from break-even?"
+  const zScore = adjustedChange / remainingVol;
 
-  // Step 5: Apply time factor - deviation grows as window progresses
-  const timeFactor = getTimeFactor(secondsRemaining);
-  const deviation = (rawFair - 0.50) * timeFactor;
-  const fairUp = Math.max(0.01, Math.min(0.99, 0.50 + deviation));
-  const fairDown = Math.max(0.01, Math.min(0.99, 1.0 - fairUp));
+  // Step 6: Convert z-score to probability via sigmoid
+  const probUp = sigmoid(zScore * SIGMOID_SENSITIVITY);
 
-  // Step 6: Return based on projected direction
-  if (isUp) {
-    return { up: fairUp, down: fairDown };
-  } else {
-    return { up: fairDown, down: fairUp };
-  }
+  // Step 7: Clamp and return
+  const fairUp = Math.max(0.01, Math.min(0.99, probUp));
+  const fairDown = Math.max(0.01, Math.min(0.99, 1 - probUp));
+
+  return { up: fairUp, down: fairDown };
 }
 
 // -- Entry Signal -------------------------------------------------------------
@@ -174,12 +162,12 @@ export function evaluateScalpEntry(
 
   if (!upValid && !downValid) return null;
 
-  // Calculate velocity and projected change for logging
+  // Calculate metrics for logging
   const openPrice = getWindowOpenPrice();
+  const currentChangePct = openPrice > 0 ? ((btcPrice - openPrice) / openPrice * 100) : 0;
   const velocity = btcDelta30s / 30;
-  const projectedBtc = btcPrice + (velocity * 5);
-  const projectedChangePct = openPrice > 0 ? ((projectedBtc - openPrice) / openPrice * 100).toFixed(3) : "?";
-  const velocityStr = velocity >= 0 ? `+$${velocity.toFixed(1)}/s` : `-$${Math.abs(velocity).toFixed(1)}/s`;
+  const remainingVol = BASE_15MIN_VOL * Math.sqrt(Math.max(0.01, secondsRemaining / 900)) * 100; // as %
+  const zScore = (currentChangePct / 100 + (velocity / openPrice) * MOMENTUM_WEIGHT) / (remainingVol / 100);
 
   if (upValid && (!downValid || upGap >= downGap)) {
     return {
@@ -187,7 +175,7 @@ export function evaluateScalpEntry(
       fairValue: fair.up,
       actualPrice: yesPrice,
       gap: upGap,
-      reason: `BUY YES: mkt $${yesPrice.toFixed(2)} ? fair $${fair.up.toFixed(2)} (+${(upGap * 100).toFixed(1)}c) | proj ${projectedChangePct}% [${velocityStr}]`,
+      reason: `BUY YES: mkt $${yesPrice.toFixed(2)} ? fair $${fair.up.toFixed(2)} (+${(upGap * 100).toFixed(1)}c) | BTC ${currentChangePct >= 0 ? "+" : ""}${currentChangePct.toFixed(3)}% z=${zScore.toFixed(2)}`,
     };
   }
 
@@ -197,7 +185,7 @@ export function evaluateScalpEntry(
       fairValue: fair.down,
       actualPrice: noPrice,
       gap: downGap,
-      reason: `BUY NO: mkt $${noPrice.toFixed(2)} ? fair $${fair.down.toFixed(2)} (+${(downGap * 100).toFixed(1)}c) | proj ${projectedChangePct}% [${velocityStr}]`,
+      reason: `BUY NO: mkt $${noPrice.toFixed(2)} ? fair $${fair.down.toFixed(2)} (+${(downGap * 100).toFixed(1)}c) | BTC ${currentChangePct >= 0 ? "+" : ""}${currentChangePct.toFixed(3)}% z=${zScore.toFixed(2)}`,
     };
   }
 
