@@ -1,14 +1,14 @@
 {
   "/_not-found/page": "app/_not-found/page.js",
-  "/api/bot/circuit-breaker/reset/route": "app/api/bot/circuit-breaker/reset/route.js",
   "/api/bot/start/route": "app/api/bot/start/route.js",
+  "/api/bot/circuit-breaker/reset/route": "app/api/bot/circuit-breaker/reset/route.js",
   "/api/bot/stop/route": "app/api/bot/stop/route.js",
   "/page": "app/page.js",
   "/api/bot/status/route": "app/api/bot/status/route.js",
   "/api/outcomes/route": "app/api/outcomes/route.js",
   "/api/settings/route": "app/api/settings/route.js",
   "/api/stats/route": "app/api/stats/route.js",
+  "/api/stream/route": "app/api/stream/route.js",
   "/api/trades/route": "app/api/trades/route.js",
-  "/api/setup/test/route": "app/api/setup/test/route.js",
-  "/api/stream/route": "app/api/stream/route.js"
+  "/api/setup/test/route": "app/api/setup/test/route.js"
 }

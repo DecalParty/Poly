@@ -13,7 +13,7 @@ export default function SettingsPanel({ settings, botStatus, onSave, circuitBrea
   const [cbResetting, setCbResetting] = useState(false);
   const [confirmStatsReset, setConfirmStatsReset] = useState(false);
   const [statsResetting, setStatsResetting] = useState(false);
-  const [openSections, setOpenSections] = useState<Record<string, boolean>>({ mode: true, capital: false, markets: false, scalp: true });
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({ mode: true, capital: false, markets: false, scalp: true, value: true });
   useEffect(() => { setForm(settings); }, [settings]);
   const disabled = botStatus === "running";
   const handleNumChange = (field: keyof BotSettings, value: string) => { setForm((prev) => ({ ...prev, [field]: parseFloat(value) || 0 })); };
@@ -59,7 +59,29 @@ export default function SettingsPanel({ settings, botStatus, onSave, circuitBrea
         </div>
         <div className="rounded-xl bg-white/[0.015] border border-white/[0.04] p-3">
           <p className="text-[10px] text-gray-500 font-semibold mb-1">How it works</p>
-          <p className="text-[10px] text-gray-600 leading-relaxed">Predicts fair values using Bitbo BTC velocity + 30min trend. Market buys when a side is {((f.scalpMinGap ?? 0.02) * 100).toFixed(0)}+ cents undervalued. Sells at entry + ${(f.scalpProfitTarget ?? 0.03).toFixed(2)} or at exit window ({f.scalpExitWindow ?? 120}s left). Halves trade size with {Math.floor((f.scalpHalfSizeAfter ?? 420) / 60)}min left.</p>
+          <p className="text-[10px] text-gray-600 leading-relaxed">Detects unreflected BTC moves in the last 4 seconds. Market buys when a side is {((f.scalpMinGap ?? 0.02) * 100).toFixed(0)}+ cents undervalued. Sells at entry + ${(f.scalpProfitTarget ?? 0.02).toFixed(2)} or at exit window ({f.scalpExitWindow ?? 120}s left).</p>
+        </div>
+      </div>}
+    </Sec>
+    <Sec title="Value Strategy" open={openSections.value} onToggle={() => toggleSection("value")} badge={f.valueEnabled !== false ? { text: "ACTIVE", color: "text-purple-400 bg-purple-400/10" } : { text: "OFF", color: "text-gray-500 bg-white/[0.04]" }}>
+      <div className="flex items-center justify-between mb-4 p-3 rounded-xl bg-white/[0.02] border border-white/[0.04]">
+        <div><span className="text-[12px] font-medium text-gray-300">Late-Window Fair Value</span><p className="text-[10px] text-gray-500 mt-0.5">Enters late in window based on BTC position vs fair probability</p></div>
+        <Tog value={f.valueEnabled !== false} onChange={(v: boolean) => handleBoolChange("valueEnabled" as any, v)} disabled={disabled} />
+      </div>
+      {f.valueEnabled !== false && <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <NF label="Trade Size" value={f.valueTradeSize ?? 15} field="valueTradeSize" onChange={handleNumChange} disabled={disabled} prefix="$" step="1" />
+          <NF label="Max Positions" value={f.valueMaxPositions ?? 1} field="valueMaxPositions" onChange={handleNumChange} disabled={disabled} step="1" />
+          <NF label="Min Gap" value={f.valueMinGap ?? 0.03} field="valueMinGap" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
+          <NF label="Profit Target" value={f.valueProfitTarget ?? 0.03} field="valueProfitTarget" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
+          <NF label="Entry Min" value={f.valueEntryMin ?? 0.20} field="valueEntryMin" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
+          <NF label="Entry Max" value={f.valueEntryMax ?? 0.80} field="valueEntryMax" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
+          <NF label="Exit Window" value={f.valueExitWindow ?? 60} field="valueExitWindow" onChange={handleNumChange} disabled={disabled} suffix="sec" step="10" />
+          <NF label="Max Time Left" value={f.valueMaxSecondsRemaining ?? 480} field="valueMaxSecondsRemaining" onChange={handleNumChange} disabled={disabled} suffix="sec" step="30" />
+        </div>
+        <div className="rounded-xl bg-white/[0.015] border border-white/[0.04] p-3">
+          <p className="text-[10px] text-gray-500 font-semibold mb-1">How it works</p>
+          <p className="text-[10px] text-gray-600 leading-relaxed">Only enters when {Math.floor((f.valueMaxSecondsRemaining ?? 480) / 60)} min or less remain. Compares BTC position to fair probability. Buys if underpriced by {((f.valueMinGap ?? 0.03) * 100).toFixed(0)}+ cents. Can hold to resolution if winning.</p>
         </div>
       </div>}
     </Sec>
