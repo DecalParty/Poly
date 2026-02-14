@@ -1,5 +1,4 @@
 import WebSocket from "ws";
-import https from "https";
 import { logger } from "../logger";
 
 // -- Bitbo.io BTC Real-time Price Feed ----------------------------------------
@@ -31,41 +30,6 @@ function getWindowStart(): number {
   return Math.floor(Date.now() / 1000 / 900) * 900;
 }
 
-/**
- * Fetch the real candle open price from Binance public API.
- * Uses the 15m kline endpoint � no auth needed.
- * This is the ground truth for where BTC was at the window boundary.
- */
-async function fetchBinanceWindowOpen(windowStartSec: number): Promise<number> {
-  return new Promise<number>((resolve, reject) => {
-    const startMs = windowStartSec * 1000;
-    const url = `/api/v3/klines?symbol=BTCUSDT&interval=15m&startTime=${startMs}&limit=1`;
-    const req = https.get({
-      hostname: "api.binance.com",
-      path: url,
-      timeout: 5000,
-    }, (res) => {
-      let data = "";
-      res.on("data", (chunk) => (data += chunk));
-      res.on("end", () => {
-        try {
-          const klines = JSON.parse(data);
-          if (klines && klines.length > 0 && klines[0][1]) {
-            const openPrice = parseFloat(klines[0][1]);
-            if (openPrice > 0) {
-              resolve(openPrice);
-              return;
-            }
-          }
-          reject(new Error("No kline data"));
-        } catch (e) { reject(e); }
-      });
-    });
-    req.on("error", reject);
-    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
-  });
-}
-
 function handlePrice(price: number) {
   if (price <= 0) return;
   lastPrice = price;
@@ -89,24 +53,15 @@ function handlePrice(price: number) {
   }
 
   // Snapshot window-open price at the start of each 15-min window
+  // IMPORTANT: Use Bitbo's first tick as the open price - this matches Polymarket's
+  // pricing source. Do NOT use Binance - their candle boundaries may differ slightly.
   const currentWindowStart = getWindowStart();
   if (currentWindowStart !== windowOpenTs) {
-    // New window � use Bitbo's first tick as provisional open
+    // New window - use Bitbo's first tick as the official open
     windowOpenPrice = price;
     windowOpenTs = currentWindowStart;
-    windowOpenVerified = false;
-    logger.info(`[BitboWS] New window ${currentWindowStart}: provisional open $${price.toFixed(2)}`);
-    // Fetch the real open from Binance in the background
-    fetchBinanceWindowOpen(currentWindowStart).then((binanceOpen) => {
-      if (windowOpenTs === currentWindowStart) {
-        windowOpenPrice = binanceOpen;
-        windowOpenVerified = true;
-        logger.info(`[BitboWS] Window ${currentWindowStart}: verified open $${binanceOpen.toFixed(2)} (Binance)`);
-      }
-    }).catch((err) => {
-      logger.warn(`[BitboWS] Failed to fetch Binance open: ${err.message || err}`);
-      // Keep provisional Bitbo open � better than nothing
-    });
+    windowOpenVerified = true; // Bitbo IS the source of truth
+    logger.info(`[BitboWS] New window ${currentWindowStart}: open $${price.toFixed(2)} (Bitbo)`);
   }
 }
 
@@ -189,23 +144,17 @@ export function getBinanceLastUpdate(): number {
   return lastUpdate;
 }
 
-/** BTC price at the start of the current 15-min window. */
+/** BTC price at the start of the current 15-min window (from Bitbo). */
 export function getWindowOpenPrice(): number {
   const currentWindowStart = getWindowStart();
   if (windowOpenTs !== currentWindowStart && lastPrice > 0) {
-    // Mid-window start � use current price as provisional, fetch real open
+    // Mid-window start - use current Bitbo price as the open.
+    // This is imperfect but consistent with using Bitbo everywhere.
+    // Will self-correct at next window boundary.
     windowOpenPrice = lastPrice;
     windowOpenTs = currentWindowStart;
     windowOpenVerified = false;
-    fetchBinanceWindowOpen(currentWindowStart).then((binanceOpen) => {
-      if (windowOpenTs === currentWindowStart) {
-        windowOpenPrice = binanceOpen;
-        windowOpenVerified = true;
-        logger.info(`[BitboWS] Late-start window ${currentWindowStart}: verified open $${binanceOpen.toFixed(2)} (Binance)`);
-      }
-    }).catch(() => {
-      // Keep provisional � will self-correct next window
-    });
+    logger.info(`[BitboWS] Mid-window start ${currentWindowStart}: using current price $${lastPrice.toFixed(2)} as open`);
   }
   return windowOpenPrice;
 }
