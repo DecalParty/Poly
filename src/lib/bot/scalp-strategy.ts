@@ -1,34 +1,35 @@
 /**
- * Scalp Strategy -- Predictive Fair Value
+ * Scalp Strategy -- Simple Fair Value
  *
- * Uses ALL available data to PREDICT where Polymarket prices are heading:
- * 1. BTC price from Bitbo (1-2s ahead of Polymarket)
- * 2. BTC velocity ($/sec over last 30-60s) to project forward
- * 3. Current Polymarket prices (to derive window-open price)
- * 4. Time remaining in window
- * 5. 30min BTC trend (momentum confirmation)
+ * SIMPLIFIED: Uses actual BTC % change from window open (fetched from Binance API)
+ * to compute fair value. No projections, no derived opens, no velocity extrapolation.
  *
- * KEY FIX: Previous algorithm was circular (derived open from btcPrice,
- * then recomputed change using same btcPrice = always same result).
- * Now we PROJECT btcPrice forward by velocity to break the circularity.
- * If BTC is rising at $3/sec, we project 3 seconds ahead. This predicts
- * where Polymarket WILL be, not where it IS.
+ * Logic:
+ * 1. Get actual BTC % change from window open
+ * 2. Map it to fair value using the table
+ * 3. Apply time decay (markets converge to fair value over time)
+ * 4. If fair value > market price by minGap, buy
+ *
+ * This is what you'd do manually: "BTC is up 0.05% from open, so YES should be ~58%,
+ * but it's only 52%, so buy YES."
  */
 
+import { getWindowOpenPrice, getBinancePrice } from "../prices/binance-ws";
+
 // -- Fair Value Table ---------------------------------------------------------
-// REVISED: More sensitive to smaller moves for consistent scalps ($1-$3 gains)
+// Maps BTC % change from window open to fair probability of UP winning
 const FAIR_VALUE_TABLE = [
-  { change: 0.00000, value: 0.500 },
-  { change: 0.00010, value: 0.510 }, // 0.01% ($9) -> 51%
-  { change: 0.00020, value: 0.525 }, // 0.02% ($18) -> 52.5%
-  { change: 0.00035, value: 0.550 }, // 0.035% ($31) -> 55%
-  { change: 0.00050, value: 0.580 }, // 0.05% ($45) -> 58%
-  { change: 0.00075, value: 0.620 }, // 0.075% ($67) -> 62%
-  { change: 0.00100, value: 0.660 }, // 0.10% ($90) -> 66%
-  { change: 0.00150, value: 0.720 },
-  { change: 0.00250, value: 0.800 },
-  { change: 0.00500, value: 0.900 },
-  { change: 0.01000, value: 0.980 },
+  { change: 0.00000, value: 0.500 },  // 0% change = 50/50
+  { change: 0.00010, value: 0.520 },  // 0.01% ($9) -> 52%
+  { change: 0.00020, value: 0.540 },  // 0.02% ($18) -> 54%
+  { change: 0.00035, value: 0.570 },  // 0.035% ($31) -> 57%
+  { change: 0.00050, value: 0.600 },  // 0.05% ($45) -> 60%
+  { change: 0.00075, value: 0.650 },  // 0.075% ($67) -> 65%
+  { change: 0.00100, value: 0.700 },  // 0.10% ($90) -> 70%
+  { change: 0.00150, value: 0.780 },  // 0.15% ($135) -> 78%
+  { change: 0.00250, value: 0.860 },  // 0.25% ($225) -> 86%
+  { change: 0.00500, value: 0.940 },  // 0.50% ($450) -> 94%
+  { change: 0.01000, value: 0.990 },  // 1.0% ($900) -> 99%
 ];
 
 function interpolate(absChange: number): number {
@@ -46,100 +47,61 @@ function interpolate(absChange: number): number {
   return table[table.length - 1].value;
 }
 
-function reverseInterpolate(fairValue: number): number {
-  const table = FAIR_VALUE_TABLE;
-  if (fairValue <= table[0].value) return table[0].change;
-  if (fairValue >= table[table.length - 1].value) return table[table.length - 1].change;
-  for (let i = 1; i < table.length; i++) {
-    if (fairValue <= table[i].value) {
-      const prev = table[i - 1];
-      const curr = table[i];
-      const t = (fairValue - prev.value) / (curr.value - prev.value);
-      return prev.change + t * (curr.change - prev.change);
-    }
-  }
-  return table[table.length - 1].change;
-}
-
+/**
+ * Time factor: how much weight to give the fair value.
+ * Early in window (little elapsed): market hasn't had time to react, more opportunity.
+ * Late in window (much elapsed): market has priced it in, less opportunity.
+ */
 function getTimeFactor(secondsRemaining: number): number {
   const elapsed = Math.max(0, 900 - secondsRemaining);
-  return Math.sqrt(Math.min(1, elapsed / 900));
+  // Linear: at 0s elapsed, factor = 0.2; at 900s elapsed, factor = 1.0
+  return 0.2 + 0.8 * (elapsed / 900);
 }
 
-// How many seconds ahead to project BTC price using velocity.
-// Larger = more aggressive predictions, more trades, more risk.
-// 10s lookahead: stays close to latency-lead edge without becoming a momentum bet.
-const LOOKAHEAD_SECONDS = 10;
-
 /**
- * Compute predictive fair values.
+ * Compute fair values based on ACTUAL BTC % change from window open.
  *
- * @param btcDelta - BTC $ change over last 30s (used to compute velocity)
- * @param btcPrice - current BTC price from Bitbo
- *
- * The trick: derive the window-open from Polymarket's current prices + btcPrice,
- * then compute fair value using a PROJECTED btcPrice (current + velocity * lookahead).
- * This breaks the circular math and creates a real gap when BTC is moving.
+ * Simple logic you can verify manually:
+ * - Get current BTC price and window open price
+ * - Calculate % change
+ * - Look up fair value from table
+ * - Apply time decay
  */
 export function computeFairValue(
   yesPrice: number,
   noPrice: number,
-  btcDelta: number,
+  btcDelta: number,      // ignored - we use actual change instead
   btcPrice: number,
-  trendDirection: number,
-  trendStrength: number,
+  trendDirection: number, // ignored - keeping it simple
+  trendStrength: number,  // ignored
   secondsRemaining: number,
 ): { up: number; down: number } {
-  if (btcPrice <= 0 || yesPrice <= 0.01 || noPrice <= 0.01) {
+  const openPrice = getWindowOpenPrice();
+
+  // Guard: need valid prices
+  if (btcPrice <= 0 || openPrice <= 0) {
     return { up: yesPrice, down: noPrice };
   }
 
+  // Step 1: Calculate actual BTC % change from window open
+  const btcChange = (btcPrice - openPrice) / openPrice;
+  const absChange = Math.abs(btcChange);
+  const isUp = btcChange >= 0;
+
+  // Step 2: Look up fair value from table
+  const rawFair = interpolate(absChange);
+
+  // Step 3: Apply time decay - fair value deviation grows as window progresses
   const timeFactor = getTimeFactor(secondsRemaining);
-  if (timeFactor < 0.05) return { up: yesPrice, down: noPrice };
+  const deviation = (rawFair - 0.50) * timeFactor;
+  const fairUp = Math.max(0.01, Math.min(0.99, 0.50 + deviation));
+  const fairDown = Math.max(0.01, Math.min(0.99, 1.0 - fairUp));
 
-  // -- Step 1: Derive window-open from market prices --
-  const downWinning = noPrice > yesPrice;
-  const winningPrice = downWinning ? noPrice : yesPrice;
-
-  const rawFairImplied = 0.50 + (winningPrice - 0.50) / timeFactor;
-  const clampedRawFair = Math.max(0.50, Math.min(0.97, rawFairImplied));
-  const impliedAbsChange = reverseInterpolate(clampedRawFair);
-
-  const derivedOpen = downWinning
-    ? btcPrice / (1 - impliedAbsChange)
-    : btcPrice / (1 + impliedAbsChange);
-
-  // -- Step 2: Project BTC forward using velocity --
-  // btcDelta is the $ change over the last 30 seconds.
-  // velocity = btcDelta / 30 seconds -> project forward by LOOKAHEAD_SECONDS
-  const velocity = btcDelta / 30; // $/sec
-  const projectedBtc = btcPrice + velocity * LOOKAHEAD_SECONDS;
-
-  // -- Step 3: Compute fair value using PROJECTED price --
-  const projectedChange = (projectedBtc - derivedOpen) / derivedOpen;
-  const projectedAbsChange = Math.abs(projectedChange);
-  const rawFairProjected = interpolate(projectedAbsChange);
-
-  // -- Step 4: Trend boost --
-  let trendBoost = 1.0;
-  const projDir = projectedChange > 0 ? 1 : projectedChange < 0 ? -1 : 0;
-  if (projDir !== 0 && trendDirection !== 0) {
-    if (projDir === trendDirection) {
-      trendBoost = 1.0 + 0.3 * trendStrength;
-    } else {
-      trendBoost = 1.0 - 0.3 * trendStrength;
-    }
-  }
-
-  // -- Step 5: Compute final fair values --
-  const deviation = (rawFairProjected - 0.50) * timeFactor * trendBoost;
-  const winningFair = Math.max(0.01, Math.min(0.99, 0.50 + deviation));
-  const losingFair = Math.max(0.01, Math.min(0.99, 1.0 - winningFair));
-
-  if (projectedChange >= 0) {
-    return { up: winningFair, down: losingFair };
+  // Step 4: Return based on direction
+  if (isUp) {
+    return { up: fairUp, down: fairDown };
   } else {
-    return { up: losingFair, down: winningFair };
+    return { up: fairDown, down: fairUp };
   }
 }
 
@@ -174,22 +136,11 @@ export function evaluateScalpEntry(
   // Guard 1: don't enter if we'd have to exit immediately
   if (secondsRemaining <= exitWindowSecs) return null;
 
-  // Guard 2: Post-trade cooldown -- 15s after any sell.
-  // Fast enough to catch continued moves, slow enough to avoid chop re-entry.
+  // Guard 2: Post-trade cooldown -- 10s after any sell
   const now = Date.now();
-  if (lastTradeTime > 0 && now - lastTradeTime < 15_000) return null;
+  if (lastTradeTime > 0 && now - lastTradeTime < 10_000) return null;
 
-  // Guard 3: Minimum velocity -- need some BTC movement, but keep threshold low.
-  // $0.1/sec = $3 in 30s. Captures slow drifts too.
-  const velocity30s = btcDelta30s / 30;
-  if (Math.abs(velocity30s) < 0.1) return null;
-
-  // Guard 4: Reversal detection -- only block if 5s is STRONGLY opposite to 30s.
-  // A weak counter-tick is just noise. Only block if 5s velocity is > $1/sec opposite.
-  const velocity5s = btcDelta5s / 5;
-  const strongReversal = (velocity30s > 0 && velocity5s < -1.0) || (velocity30s < 0 && velocity5s > 1.0);
-  if (strongReversal) return null;
-
+  // Compute fair value using actual BTC change from window open
   const fair = computeFairValue(
     yesPrice, noPrice, btcDelta30s, btcPrice,
     trendDirection, trendStrength, secondsRemaining
@@ -198,15 +149,17 @@ export function evaluateScalpEntry(
   const upGap = fair.up - yesPrice;
   const downGap = fair.down - noPrice;
 
-  // Guard 5: Cap maximum gap -- if gap > 8 cents, data is stale or extreme vol
-  const MAX_GAP = 0.08;
+  // Guard 3: Cap maximum gap -- if gap > 10 cents, data is stale or extreme vol
+  const MAX_GAP = 0.10;
 
   const upValid = upGap >= minGap && upGap <= MAX_GAP && yesPrice >= entryMin && yesPrice <= entryMax;
   const downValid = downGap >= minGap && downGap <= MAX_GAP && noPrice >= entryMin && noPrice <= entryMax;
 
   if (!upValid && !downValid) return null;
 
-  const trendStr = trendDirection > 0 ? "UP" : trendDirection < 0 ? "DN" : "--";
+  // Get actual BTC change for logging
+  const openPrice = getWindowOpenPrice();
+  const btcChangePct = openPrice > 0 ? ((btcPrice - openPrice) / openPrice * 100).toFixed(3) : "?";
 
   if (upValid && (!downValid || upGap >= downGap)) {
     return {
@@ -214,7 +167,7 @@ export function evaluateScalpEntry(
       fairValue: fair.up,
       actualPrice: yesPrice,
       gap: upGap,
-      reason: `UP $${yesPrice.toFixed(2)} -> $${fair.up.toFixed(2)} (+${(upGap * 100).toFixed(1)}c) v30=$${velocity30s.toFixed(1)} v5=$${velocity5s.toFixed(1)} ${trendStr}`,
+      reason: `BUY YES: market $${yesPrice.toFixed(2)}, fair $${fair.up.toFixed(2)}, gap +${(upGap * 100).toFixed(1)}c | BTC ${btcChangePct}% from open`,
     };
   }
 
@@ -224,7 +177,7 @@ export function evaluateScalpEntry(
       fairValue: fair.down,
       actualPrice: noPrice,
       gap: downGap,
-      reason: `DN $${noPrice.toFixed(2)} -> $${fair.down.toFixed(2)} (+${(downGap * 100).toFixed(1)}c) v30=$${velocity30s.toFixed(1)} v5=$${velocity5s.toFixed(1)} ${trendStr}`,
+      reason: `BUY NO: market $${noPrice.toFixed(2)}, fair $${fair.down.toFixed(2)}, gap +${(downGap * 100).toFixed(1)}c | BTC ${btcChangePct}% from open`,
     };
   }
 

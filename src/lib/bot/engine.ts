@@ -966,13 +966,15 @@ async function tradingLoop() {
               addAlert("info", `Scalp buy: ${signal.side.toUpperCase()} @ $${signal.actualPrice.toFixed(2)}`, market.asset);
             } else {
               // Live: market buy (cross spread for instant fill)
-              const result = await placeBuyOrder(tokenId, signal.actualPrice, shares, market.tickSize, market.negRisk);
-              if (result.success && result.orderId) {
-                const fillPrice = result.filledPrice || signal.actualPrice;
-                const fillShares = result.filledSize || shares;
-                const sellTarget = Math.min(0.99, Math.round((fillPrice + settings.scalpProfitTarget) * 100) / 100);
+              broadcastLog(`[LIVE] Attempting buy: ${signal.side.toUpperCase()} ${shares.toFixed(2)} @ $${signal.actualPrice.toFixed(2)} | token=${tokenId.slice(0, 8)}...`);
+              try {
+                const result = await placeBuyOrder(tokenId, signal.actualPrice, shares, market.tickSize, market.negRisk);
+                if (result.success && result.orderId) {
+                  const fillPrice = result.filledPrice || signal.actualPrice;
+                  const fillShares = result.filledSize || shares;
+                  const sellTarget = Math.min(0.99, Math.round((fillPrice + settings.scalpProfitTarget) * 100) / 100);
 
-                scalpPositions.push({
+                  scalpPositions.push({
                   id: result.orderId,
                   conditionId: market.conditionId,
                   slug: market.slug,
@@ -1012,8 +1014,13 @@ async function tradingLoop() {
                 broadcastLog(`Market buy FILLED: ${signal.side.toUpperCase()} ${fillShares.toFixed(1)} @ $${fillPrice.toFixed(2)} | target $${sellTarget.toFixed(2)}`);
                 addAlert("info", `Scalp buy: ${signal.side.toUpperCase()} @ $${fillPrice.toFixed(2)}`, market.asset);
               } else {
-                broadcastLog(`Market buy FAILED: ${result.error || "unknown"} | ${signal.side.toUpperCase()} ${shares} @ $${signal.actualPrice.toFixed(2)}`);
+                broadcastLog(`Market buy FAILED: ${result.error || "unknown"} | ${signal.side.toUpperCase()} ${shares.toFixed(2)} @ $${signal.actualPrice.toFixed(2)}`);
                 addAlert("warning", `Buy failed: ${result.error || "unknown"}`, market.asset);
+              }
+              } catch (buyErr) {
+                const errMsg = buyErr instanceof Error ? buyErr.message : String(buyErr);
+                broadcastLog(`[LIVE] Buy exception: ${errMsg}`);
+                addAlert("error", `Buy exception: ${errMsg}`, market.asset);
               }
             }
 
