@@ -160,17 +160,17 @@ export async function placeBuyOrder(
 
     logger.info(`[LIVE] BUY response: ${JSON.stringify(result)}`);
 
-    // The CLOB client returns { error: "..." } on API rejection instead of throwing.
-    // Detect this and surface the real error.
-    if (result?.error) {
-      const apiError = typeof result.error === "string" ? result.error : JSON.stringify(result.error);
-      logger.error(`[LIVE] BUY rejected by API: ${apiError} (status: ${result.status || "unknown"})`);
-      return { success: false, error: `API rejected: ${apiError}` };
-    }
-
+    // Check for orderId FIRST — if present, order was accepted.
+    // The CLOB client can return both orderID and error fields together.
     const orderId = result?.orderID || result?.orderIds?.[0];
     if (!orderId || orderId === "unknown") {
-      logger.error(`Buy order returned no orderId`);
+      // No orderId — check if CLOB returned an error object
+      if (result?.error) {
+        const apiError = typeof result.error === "string" ? result.error : JSON.stringify(result.error);
+        logger.error(`[LIVE] BUY rejected by API: ${apiError} (status: ${result.status || "unknown"})`);
+        return { success: false, error: `API rejected: ${apiError}` };
+      }
+      logger.error(`Buy order returned no orderId: ${JSON.stringify(result)}`);
       return { success: false, error: "No orderId returned from Polymarket" };
     }
 
@@ -249,17 +249,14 @@ export async function placeSellOrder(
 
     logger.info(`[LIVE] SELL response: ${JSON.stringify(result)}`);
 
-    // The CLOB client returns { error: "..." } on API rejection instead of throwing.
-    // Detect this and surface the real error.
-    if (result?.error) {
-      const apiError = typeof result.error === "string" ? result.error : JSON.stringify(result.error);
-      logger.error(`[LIVE] SELL rejected by API: ${apiError} (status: ${result.status || "unknown"})`);
-      return { success: false, error: `API rejected: ${apiError}` };
-    }
-
     const orderId = result?.orderID || result?.orderIds?.[0];
     if (!orderId || orderId === "unknown") {
-      logger.error(`Sell order returned no orderId`);
+      if (result?.error) {
+        const apiError = typeof result.error === "string" ? result.error : JSON.stringify(result.error);
+        logger.error(`[LIVE] SELL rejected by API: ${apiError} (status: ${result.status || "unknown"})`);
+        return { success: false, error: `API rejected: ${apiError}` };
+      }
+      logger.error(`Sell order returned no orderId: ${JSON.stringify(result)}`);
       return { success: false, error: "No orderId returned from Polymarket" };
     }
 
@@ -334,13 +331,15 @@ export async function placeLimitBuyOrder(
     }
     const result = await client.createAndPostOrder(...args);
 
-    if (result?.error) {
-      const apiError = typeof result.error === "string" ? result.error : JSON.stringify(result.error);
-      logger.error(`[CLOB] Limit buy rejected: ${apiError}`);
-      return { success: false, error: `API rejected: ${apiError}` };
+    const orderId = result?.orderID || result?.orderIds?.[0];
+    if (!orderId) {
+      if (result?.error) {
+        const apiError = typeof result.error === "string" ? result.error : JSON.stringify(result.error);
+        logger.error(`[CLOB] Limit buy rejected: ${apiError}`);
+        return { success: false, error: `API rejected: ${apiError}` };
+      }
+      return { success: false, error: "No orderId returned" };
     }
-
-    const orderId = result?.orderID || result?.orderIds?.[0] || "unknown";
     logger.info(`[CLOB] Limit buy placed: ${size.toFixed(2)} shares @ $${price} | postOnly=${postOnly} | orderId=${orderId}`);
     return { success: true, orderId };
   } catch (err) {
@@ -382,16 +381,20 @@ export async function placeLimitSellOrder(
       expiration: undefined,
     }, { tickSize: tickSize as TickSize, negRisk }, OrderType.GTC);
 
-    if (result?.error) {
-      const apiError = typeof result.error === "string" ? result.error : JSON.stringify(result.error);
-      logger.error(`[SCALP] Limit sell rejected: ${apiError}`);
-      return { success: false, error: `API rejected: ${apiError}` };
+    const orderId = result?.orderID || result?.orderIds?.[0];
+    if (!orderId) {
+      if (result?.error) {
+        const apiError = typeof result.error === "string" ? result.error : JSON.stringify(result.error);
+        logger.error(`[SCALP] Limit sell rejected: ${apiError}`);
+        return { success: false, error: `API rejected: ${apiError}` };
+      }
+      return { success: false, error: "No orderId returned" };
     }
 
     logger.info(`[SCALP] Limit sell placed: ${roundedSize.toFixed(2)} shares @ $${price} | token=${tokenId.slice(0, 10)}...`);
     return {
       success: true,
-      orderId: result?.orderID || result?.orderIds?.[0] || "unknown",
+      orderId,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
