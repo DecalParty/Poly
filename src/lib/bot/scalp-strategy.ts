@@ -58,21 +58,32 @@ function getTimeFactor(secondsRemaining: number): number {
   return 0.2 + 0.8 * (elapsed / 900);
 }
 
+// How many seconds ahead to project BTC price using recent velocity.
+// This is the predictive edge: if BTC moved $30 in the last 30s, project it
+// will move another $5 in the next 5 seconds.
+const LOOKAHEAD_SECONDS = 5;
+
 /**
- * Compute fair values based on ACTUAL BTC % change from window open.
+ * Compute fair values using BTC change + velocity projection.
  *
- * Simple logic you can verify manually:
- * - Get current BTC price and window open price
- * - Calculate % change
- * - Look up fair value from table
- * - Apply time decay
+ * The prediction logic:
+ * 1. Get actual BTC % change from window open (current state)
+ * 2. Calculate velocity from recent movement (btcDelta / 30s)
+ * 3. Project BTC forward by LOOKAHEAD_SECONDS
+ * 4. Compute fair value using PROJECTED change (this is the edge)
+ *
+ * Why this works:
+ * - Bitbo price leads Polymarket by 1-2 seconds
+ * - Velocity projection adds another 5 seconds of expected movement
+ * - Total: we're predicting where Polymarket SHOULD be in ~6-7 seconds
+ * - If that's higher than current market price, we buy
  */
 export function computeFairValue(
   yesPrice: number,
   noPrice: number,
-  btcDelta: number,      // ignored - we use actual change instead
+  btcDelta: number,      // BTC $ change over last 30s - used for velocity
   btcPrice: number,
-  trendDirection: number, // ignored - keeping it simple
+  trendDirection: number, // ignored for simplicity
   trendStrength: number,  // ignored
   secondsRemaining: number,
 ): { up: number; down: number } {
@@ -83,21 +94,27 @@ export function computeFairValue(
     return { up: yesPrice, down: noPrice };
   }
 
-  // Step 1: Calculate actual BTC % change from window open
-  const btcChange = (btcPrice - openPrice) / openPrice;
-  const absChange = Math.abs(btcChange);
-  const isUp = btcChange >= 0;
+  // Step 1: Calculate velocity from recent movement
+  const velocity = btcDelta / 30; // $/sec
 
-  // Step 2: Look up fair value from table
+  // Step 2: Project BTC forward using velocity
+  const projectedBtc = btcPrice + (velocity * LOOKAHEAD_SECONDS);
+
+  // Step 3: Calculate projected % change from window open
+  const projectedChange = (projectedBtc - openPrice) / openPrice;
+  const absChange = Math.abs(projectedChange);
+  const isUp = projectedChange >= 0;
+
+  // Step 4: Look up fair value from table
   const rawFair = interpolate(absChange);
 
-  // Step 3: Apply time decay - fair value deviation grows as window progresses
+  // Step 5: Apply time factor - deviation grows as window progresses
   const timeFactor = getTimeFactor(secondsRemaining);
   const deviation = (rawFair - 0.50) * timeFactor;
   const fairUp = Math.max(0.01, Math.min(0.99, 0.50 + deviation));
   const fairDown = Math.max(0.01, Math.min(0.99, 1.0 - fairUp));
 
-  // Step 4: Return based on direction
+  // Step 6: Return based on projected direction
   if (isUp) {
     return { up: fairUp, down: fairDown };
   } else {
@@ -157,9 +174,12 @@ export function evaluateScalpEntry(
 
   if (!upValid && !downValid) return null;
 
-  // Get actual BTC change for logging
+  // Calculate velocity and projected change for logging
   const openPrice = getWindowOpenPrice();
-  const btcChangePct = openPrice > 0 ? ((btcPrice - openPrice) / openPrice * 100).toFixed(3) : "?";
+  const velocity = btcDelta30s / 30;
+  const projectedBtc = btcPrice + (velocity * 5);
+  const projectedChangePct = openPrice > 0 ? ((projectedBtc - openPrice) / openPrice * 100).toFixed(3) : "?";
+  const velocityStr = velocity >= 0 ? `+$${velocity.toFixed(1)}/s` : `-$${Math.abs(velocity).toFixed(1)}/s`;
 
   if (upValid && (!downValid || upGap >= downGap)) {
     return {
@@ -167,7 +187,7 @@ export function evaluateScalpEntry(
       fairValue: fair.up,
       actualPrice: yesPrice,
       gap: upGap,
-      reason: `BUY YES: market $${yesPrice.toFixed(2)}, fair $${fair.up.toFixed(2)}, gap +${(upGap * 100).toFixed(1)}c | BTC ${btcChangePct}% from open`,
+      reason: `BUY YES: mkt $${yesPrice.toFixed(2)} ? fair $${fair.up.toFixed(2)} (+${(upGap * 100).toFixed(1)}c) | proj ${projectedChangePct}% [${velocityStr}]`,
     };
   }
 
@@ -177,7 +197,7 @@ export function evaluateScalpEntry(
       fairValue: fair.down,
       actualPrice: noPrice,
       gap: downGap,
-      reason: `BUY NO: market $${noPrice.toFixed(2)}, fair $${fair.down.toFixed(2)}, gap +${(downGap * 100).toFixed(1)}c | BTC ${btcChangePct}% from open`,
+      reason: `BUY NO: mkt $${noPrice.toFixed(2)} ? fair $${fair.down.toFixed(2)} (+${(downGap * 100).toFixed(1)}c) | proj ${projectedChangePct}% [${velocityStr}]`,
     };
   }
 
