@@ -1,132 +1,92 @@
 /**
- * Scalp Strategy -- BTC Price Action Patterns
+ * Scalp Strategy -- Unreflected Move Detection
  *
- * The edge: Predicting BTC's next 10-60 seconds based on well-documented
- * price action patterns. BTC has predictable micro-behaviors:
+ * The edge: Polymarket prices lag behind BTC movements by a few seconds.
+ * When BTC moves, the YES/NO prices should adjust proportionally.
+ * If they haven't adjusted yet, there's a gap we can exploit.
  *
- * 1. MEAN REVERSION - Sharp spikes often pull back
- *    - BTC drops $40 in 5 sec -> bounce likely -> buy YES
- *    - BTC spikes $40 in 5 sec -> pullback likely -> buy NO
+ * Key insight: We don't need to predict where BTC is going.
+ * We just need to detect when the market hasn't caught up to where BTC IS.
  *
- * 2. MOMENTUM CONTINUATION - Steady grinds continue
- *    - BTC grinding up for 30+ sec -> likely continues -> buy YES
- *    - BTC grinding down for 30+ sec -> likely continues -> buy NO
- *
- * 3. EXHAUSTION - Fast moves that slow down reverse
- *    - Sharp move followed by stall -> reversal likely
+ * Formula:
+ * 1. Calculate how much YES/NO prices SHOULD have moved based on recent BTC change
+ * 2. Compare to how much they ACTUALLY moved
+ * 3. The difference is the gap
  *
  * Goal: 2 cent profit per trade, multiple trades per window = $1-4/window
  */
 
-import { getWindowOpenPrice, getBtcDelta } from "../prices/binance-ws";
+import { getWindowOpenPrice, getBtcDelta, getBinancePrice } from "../prices/binance-ws";
 
-// Pattern detection thresholds (in $)
-const SPIKE_THRESHOLD = 30;      // $ move in 5 sec to consider a "spike"
-const MOMENTUM_THRESHOLD = 20;   // $ move in 30 sec for "momentum" (steady grind)
-const EXHAUSTION_RATIO = 0.25;   // If 5s velocity is <25% of 30s velocity, exhausted
+// How much should YES/NO prices move per $1 of BTC movement?
+// Empirically, a $50 BTC move typically causes ~2-3 cent YES/NO move
+// So roughly 0.0005 per $1 (0.05 cents per $1)
+const PRICE_SENSITIVITY = 0.0005;
+
+// Minimum BTC movement (in $) to consider (filters noise)
+const MIN_BTC_MOVE = 8;
+
+// Time windows for detecting unreflected moves
+const FAST_WINDOW_MS = 3000;  // 3 seconds - very recent, likely unreflected
+const SLOW_WINDOW_MS = 15000; // 15 seconds - should be reflected by now
 
 /**
- * Detect BTC price action pattern and predict next move.
- * Returns: 1 = expect UP, -1 = expect DOWN, 0 = no clear signal
+ * Calculate expected YES/NO price change based on BTC movement.
+ * 
+ * Logic:
+ * - BTC moved $X in the last few seconds
+ * - YES/NO should move proportionally
+ * - If BTC up $50, YES should be up ~2.5 cents
  */
-export function detectBtcPattern(
-  btcDelta5s: number,
-  btcDelta30s: number,
-): { signal: number; pattern: string; confidence: number } {
-  const abs5s = Math.abs(btcDelta5s);
-  const abs30s = Math.abs(btcDelta30s);
-  const dir5s = btcDelta5s > 0 ? 1 : btcDelta5s < 0 ? -1 : 0;
-  const dir30s = btcDelta30s > 0 ? 1 : btcDelta30s < 0 ? -1 : 0;
-  
-  // Velocity ($/sec)
-  const vel5s = btcDelta5s / 5;
-  const vel30s = btcDelta30s / 30;
-
-  // Pattern 1: SPIKE MEAN REVERSION
-  // Sharp move in last 5s -> expect bounce in opposite direction
-  if (abs5s >= SPIKE_THRESHOLD) {
-    return {
-      signal: -dir5s, // Opposite of spike direction
-      pattern: `SPIKE_REVERT: ${btcDelta5s > 0 ? "+" : ""}$${btcDelta5s.toFixed(0)} in 5s`,
-      confidence: Math.min(0.9, abs5s / 60), // Higher spike = higher confidence, cap at 0.9
-    };
-  }
-
-  // Pattern 2: MOMENTUM CONTINUATION
-  // Steady move over 30s, 5s moving same direction = continuation likely
-  if (abs30s >= MOMENTUM_THRESHOLD && dir5s === dir30s && abs5s >= 5) {
-    return {
-      signal: dir30s, // Same as momentum direction
-      pattern: `MOMENTUM: ${btcDelta30s > 0 ? "+" : ""}$${btcDelta30s.toFixed(0)} over 30s`,
-      confidence: Math.min(0.8, abs30s / 50),
-    };
-  }
-
-  // Pattern 3: EXHAUSTION REVERSAL
-  // Had momentum but 5s velocity is much weaker or opposite -> reversal
-  if (abs30s >= MOMENTUM_THRESHOLD) {
-    const velocityRatio = Math.abs(vel5s) / Math.abs(vel30s);
-    if (velocityRatio < EXHAUSTION_RATIO || dir5s === -dir30s) {
-      return {
-        signal: -dir30s, // Opposite of prior momentum
-        pattern: `EXHAUSTION: momentum fading`,
-        confidence: 0.6,
-      };
-    }
-  }
-
-  // No clear pattern
-  return { signal: 0, pattern: "NO_PATTERN", confidence: 0 };
+function expectedPriceChange(btcMove: number): number {
+  return btcMove * PRICE_SENSITIVITY;
 }
 
 /**
- * Compute "fair value" based on BTC pattern detection.
- * If we expect BTC to go UP -> YES should be worth more.
- * If we expect BTC to go DOWN -> NO should be worth more.
- *
- * The shift is based on pattern confidence, capped at 5 cents.
+ * Compute fair value based on unreflected BTC movement.
+ * 
+ * The key insight:
+ * - Fast BTC movement (last 3s) may not be reflected yet
+ * - Slower movement (last 15s) should already be priced in
+ * - The difference tells us how much is "unreflected"
  */
 export function computeFairValue(
   yesPrice: number,
   noPrice: number,
-  btcDelta: number,      // 30s delta (passed from engine)
+  btcDelta: number,      // Not used - we get fresh deltas
   btcPrice: number,
   trendDirection: number,
   trendStrength: number,
   secondsRemaining: number,
 ): { up: number; down: number } {
-  // Get fresh 5s delta for pattern detection
-  const btcDelta5s = getBtcDelta(5000);
-  const btcDelta30s = btcDelta;
-
-  const { signal, confidence } = detectBtcPattern(btcDelta5s, btcDelta30s);
-
-  if (signal === 0 || confidence < 0.4) {
-    // No clear pattern -> fair = current market (no trade)
+  // Get BTC movement over different time windows
+  const fastMove = getBtcDelta(FAST_WINDOW_MS);  // Last 3s
+  const slowMove = getBtcDelta(SLOW_WINDOW_MS);  // Last 15s
+  
+  // The "unreflected" portion is roughly the fast move
+  // (since slow moves should already be priced in)
+  const unreflectedMove = fastMove;
+  
+  // If BTC hasn't moved enough recently, no edge
+  if (Math.abs(unreflectedMove) < MIN_BTC_MOVE) {
     return { up: yesPrice, down: noPrice };
   }
-
-  // Calculate fair value shift based on signal and confidence
-  // Max shift of 5 cents at full confidence
-  const maxShift = 0.05;
-  const shift = maxShift * confidence;
-
-  // Time factor: with less time, patterns have less room to play out
-  // Full effect with 5+ min left, reduced effect closer to end
-  const timeFactor = Math.min(1, secondsRemaining / 300);
-  const adjustedShift = shift * Math.max(0.3, timeFactor);
-
-  if (signal > 0) {
-    // Expect BTC UP -> YES worth more
+  
+  // Calculate expected price shift from unreflected move
+  const expectedShift = expectedPriceChange(unreflectedMove);
+  
+  // Direction: positive BTC move = YES should be higher
+  if (unreflectedMove > 0) {
+    // BTC moved UP recently - YES should be higher than it is
     return {
-      up: Math.min(0.99, yesPrice + adjustedShift),
-      down: Math.max(0.01, noPrice - adjustedShift),
+      up: Math.min(0.99, yesPrice + Math.abs(expectedShift)),
+      down: Math.max(0.01, noPrice - Math.abs(expectedShift)),
     };
   } else {
-    // Expect BTC DOWN -> NO worth more
+    // BTC moved DOWN recently - NO should be higher than it is
     return {
-      up: Math.max(0.01, yesPrice - adjustedShift),
-      down: Math.min(0.99, noPrice + adjustedShift),
+      up: Math.max(0.01, yesPrice - Math.abs(expectedShift)),
+      down: Math.min(0.99, noPrice + Math.abs(expectedShift)),
     };
   }
 }
@@ -162,17 +122,14 @@ export function evaluateScalpEntry(
   // Guard 1: don't enter if we'd have to exit immediately
   if (secondsRemaining <= exitWindowSecs) return null;
 
-  // Guard 2: Post-trade cooldown -- 8s after any trade
+  // Guard 2: Post-trade cooldown -- 5s after any trade (fast for scalping)
   const now = Date.now();
-  if (lastTradeTime > 0 && now - lastTradeTime < 8_000) return null;
+  if (lastTradeTime > 0 && now - lastTradeTime < 5_000) return null;
 
-  // Detect BTC pattern
-  const pattern = detectBtcPattern(btcDelta5s, btcDelta30s);
+  // Get recent BTC movement
+  const fastMove = getBtcDelta(FAST_WINDOW_MS);
   
-  // Guard 3: Need a clear pattern with decent confidence
-  if (pattern.signal === 0 || pattern.confidence < 0.5) return null;
-
-  // Compute fair value based on pattern
+  // Compute fair value based on unreflected movement
   const fair = computeFairValue(
     yesPrice, noPrice, btcDelta30s, btcPrice,
     trendDirection, trendStrength, secondsRemaining
@@ -181,15 +138,15 @@ export function evaluateScalpEntry(
   const upGap = fair.up - yesPrice;
   const downGap = fair.down - noPrice;
 
-  // Guard 4: Need minimum gap
+  // Check if either side has a tradeable gap
   const upValid = upGap >= minGap && yesPrice >= entryMin && yesPrice <= entryMax;
   const downValid = downGap >= minGap && noPrice >= entryMin && noPrice <= entryMax;
 
   if (!upValid && !downValid) return null;
 
   // Build reason string
-  const vel5s = (btcDelta5s / 5).toFixed(1);
-  const vel30s = (btcDelta30s / 30).toFixed(1);
+  const moveDir = fastMove > 0 ? "+" : "";
+  const moveStr = `BTC ${moveDir}$${fastMove.toFixed(0)} (3s)`;
 
   if (upValid && (!downValid || upGap >= downGap)) {
     return {
@@ -197,7 +154,7 @@ export function evaluateScalpEntry(
       fairValue: fair.up,
       actualPrice: yesPrice,
       gap: upGap,
-      reason: `${pattern.pattern} | mkt $${yesPrice.toFixed(2)} -> fair $${fair.up.toFixed(2)} (+${(upGap * 100).toFixed(1)}c) | v5=$${vel5s}/s v30=$${vel30s}/s`,
+      reason: `${moveStr} | YES $${yesPrice.toFixed(2)} -> $${fair.up.toFixed(2)} (+${(upGap * 100).toFixed(1)}c)`,
     };
   }
 
@@ -207,7 +164,7 @@ export function evaluateScalpEntry(
       fairValue: fair.down,
       actualPrice: noPrice,
       gap: downGap,
-      reason: `${pattern.pattern} | mkt $${noPrice.toFixed(2)} -> fair $${fair.down.toFixed(2)} (+${(downGap * 100).toFixed(1)}c) | v5=$${vel5s}/s v30=$${vel30s}/s`,
+      reason: `${moveStr} | NO $${noPrice.toFixed(2)} -> $${fair.down.toFixed(2)} (+${(downGap * 100).toFixed(1)}c)`,
     };
   }
 
@@ -248,7 +205,7 @@ export function evaluateScalpExit(
     return {
       action: "sell_profit",
       sellPrice: currentPrice,
-      reason: `TARGET: $${currentPrice.toFixed(2)} = +${(pnl * 100).toFixed(1)}c from $${entryPrice.toFixed(2)}`,
+      reason: `TARGET: +${(pnl * 100).toFixed(1)}c`,
     };
   }
 
@@ -257,7 +214,7 @@ export function evaluateScalpExit(
     return {
       action: pnl >= 0 ? "sell_profit" : "sell_loss",
       sellPrice: currentPrice,
-      reason: `EXIT_WINDOW: ${pnl >= 0 ? "+" : ""}${(pnl * 100).toFixed(1)}c, ${secondsRemaining}s left`,
+      reason: `EXIT: ${pnl >= 0 ? "+" : ""}${(pnl * 100).toFixed(1)}c, ${secondsRemaining}s left`,
     };
   }
 
