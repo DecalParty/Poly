@@ -100,6 +100,7 @@ let cooldownUntilWindow = 0;
 let lastEntryEvalTime = 0;
 let lastScalpTradeTime = 0; // timestamp of last sell  for post-trade cooldown
 let prevBestGap = 0; // previous eval's best gap  for freshness check
+let consecutiveGapHits = 0; // how many consecutive eval cycles showed a valid gap
 const ENTRY_EVAL_INTERVAL_MS = 500; // 500ms -- catch fast gaps
 
 // Circuit breaker
@@ -895,11 +896,17 @@ async function tradingLoop() {
             settings.scalpMinGap, settings.scalpEntryMin, settings.scalpEntryMax,
             settings.scalpExitWindow,
             lastScalpTradeTime, prevBestGap,
+            consecutiveGapHits,
           );
 
-          // Track gap for freshness check
+          // Track gap for freshness check + persistence counter
           const fairNow = computeFairValue(market.yesPrice, market.noPrice, btcDelta30, btcPrice, trend.direction, trend.strength, market.secondsRemaining);
           prevBestGap = Math.max(fairNow.up - market.yesPrice, fairNow.down - market.noPrice);
+          if (prevBestGap >= settings.scalpMinGap) {
+            consecutiveGapHits++;
+          } else {
+            consecutiveGapHits = 0;
+          }
 
           // Diagnostic log every 15s
           const diagKey = `_diag_${market.asset}`;
@@ -911,7 +918,7 @@ async function tradingLoop() {
             const v30 = (btcDelta30 / 30).toFixed(1);
             const v5 = (btcDelta5 / 5).toFixed(1);
             const trendStr = trend.direction > 0 ? "UP" : trend.direction < 0 ? "DN" : "--";
-            const cooldownLeft = lastScalpTradeTime > 0 ? Math.max(0, 30 - Math.round((now - lastScalpTradeTime) / 1000)) : 0;
+            const cooldownLeft = lastScalpTradeTime > 0 ? Math.max(0, 15 - Math.round((now - lastScalpTradeTime) / 1000)) : 0;
             broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} | BTC $${btcPrice.toFixed(0)} v30=$${v30} v5=$${v5} ${trendStr}${(trend.strength * 100).toFixed(0)}% | UP $${market.yesPrice.toFixed(2)} fair $${fairNow.up.toFixed(3)} | DN $${market.noPrice.toFixed(2)} fair $${fairNow.down.toFixed(3)} | gap ${(prevBestGap * 100).toFixed(1)}c${cooldownLeft > 0 ? ` | CD ${cooldownLeft}s` : ""}`);
           }
 

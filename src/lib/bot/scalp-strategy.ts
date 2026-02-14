@@ -16,20 +16,19 @@
  */
 
 // -- Fair Value Table ---------------------------------------------------------
+// REVISED: More sensitive to smaller moves for consistent scalps ($1-$3 gains)
 const FAIR_VALUE_TABLE = [
-  { change: 0.0000, value: 0.500 },
-  { change: 0.0003, value: 0.505 },
-  { change: 0.0005, value: 0.510 },
-  { change: 0.0010, value: 0.530 },
-  { change: 0.0015, value: 0.550 },
-  { change: 0.0020, value: 0.575 },
-  { change: 0.0025, value: 0.600 },
-  { change: 0.0030, value: 0.640 },
-  { change: 0.0040, value: 0.710 },
-  { change: 0.0050, value: 0.780 },
-  { change: 0.0075, value: 0.870 },
-  { change: 0.0100, value: 0.930 },
-  { change: 0.0150, value: 0.970 },
+  { change: 0.00000, value: 0.500 },
+  { change: 0.00010, value: 0.510 }, // 0.01% ($9) -> 51%
+  { change: 0.00020, value: 0.525 }, // 0.02% ($18) -> 52.5%
+  { change: 0.00035, value: 0.550 }, // 0.035% ($31) -> 55%
+  { change: 0.00050, value: 0.580 }, // 0.05% ($45) -> 58%
+  { change: 0.00075, value: 0.620 }, // 0.075% ($67) -> 62%
+  { change: 0.00100, value: 0.660 }, // 0.10% ($90) -> 66%
+  { change: 0.00150, value: 0.720 },
+  { change: 0.00250, value: 0.800 },
+  { change: 0.00500, value: 0.900 },
+  { change: 0.01000, value: 0.980 },
 ];
 
 function interpolate(absChange: number): number {
@@ -69,7 +68,7 @@ function getTimeFactor(secondsRemaining: number): number {
 
 // How many seconds ahead to project BTC price using velocity.
 // Larger = more aggressive predictions, more trades, more risk.
-// 10s lookahead: if BTC moving $5/sec, projects $50 ahead.
+// 10s lookahead: stays close to latency-lead edge without becoming a momentum bet.
 const LOOKAHEAD_SECONDS = 10;
 
 /**
@@ -169,21 +168,22 @@ export function evaluateScalpEntry(
   exitWindowSecs: number,
   lastTradeTime: number,
   prevGap: number,
+  consecutiveGapHits: number,
 ): ScalpEntrySignal | null {
   if (btcPrice <= 0) return null;
 
   // Guard 1: don't enter if we'd have to exit immediately
   if (secondsRemaining <= exitWindowSecs) return null;
 
-  // Guard 2: Post-trade cooldown -- 30s after any sell.
-  // Prevents instant re-buy on stale velocity data.
+  // Guard 2: Post-trade cooldown -- 15s after any sell.
+  // Fast enough to catch continued moves, slow enough to avoid chop re-entry.
   const now = Date.now();
-  if (lastTradeTime > 0 && now - lastTradeTime < 30_000) return null;
+  if (lastTradeTime > 0 && now - lastTradeTime < 15_000) return null;
 
   // Guard 3: Minimum velocity -- need some BTC movement, but keep threshold low.
-  // $0.5/sec = $15 in 30s. Very achievable even in calm markets.
+  // $0.1/sec = $3 in 30s. Captures slow drifts too.
   const velocity30s = btcDelta30s / 30;
-  if (Math.abs(velocity30s) < 0.5) return null;
+  if (Math.abs(velocity30s) < 0.1) return null;
 
   // Guard 4: Reversal detection -- only block if 5s is STRONGLY opposite to 30s.
   // A weak counter-tick is just noise. Only block if 5s velocity is > $1/sec opposite.
@@ -206,6 +206,10 @@ export function evaluateScalpEntry(
   const downValid = downGap >= minGap && downGap <= MAX_GAP && noPrice >= entryMin && noPrice <= entryMax;
 
   if (!upValid && !downValid) return null;
+
+  // Guard 6: Gap persistence -- require gap to exist for 2+ consecutive eval cycles.
+  // Real moves persist across cycles; noise doesn't. Filters false positives.
+  if (consecutiveGapHits < 2) return null;
 
   const trendStr = trendDirection > 0 ? "UP" : trendDirection < 0 ? "DN" : "--";
 
@@ -270,6 +274,17 @@ export function evaluateScalpExit(
       action: "sell_profit",
       sellPrice: currentPrice,
       reason: `Target hit: $${currentPrice.toFixed(2)} = +$${pnl.toFixed(2)} from entry $${entryPrice.toFixed(2)}`,
+    };
+  }
+
+  // Soft stop-loss: cut at 3x profit target drawdown to prevent one bad trade
+  // from wiping out multiple small wins.
+  const stopThreshold = profitTarget * 3;
+  if (pnl <= -stopThreshold) {
+    return {
+      action: "sell_loss",
+      sellPrice: currentPrice,
+      reason: `Stop loss: $${currentPrice.toFixed(2)} = ${pnl.toFixed(2)} from entry $${entryPrice.toFixed(2)} (>${stopThreshold.toFixed(2)} drawdown)`,
     };
   }
 
