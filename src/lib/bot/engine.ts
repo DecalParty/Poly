@@ -98,6 +98,8 @@ const scalpPositions: ScalpPos[] = [];
 const pendingBuys: PendingBuy[] = [];
 let cooldownUntilWindow = 0;
 let lastEntryEvalTime = 0;
+let lastScalpTradeTime = 0; // timestamp of last sell  for post-trade cooldown
+let prevBestGap = 0; // previous eval's best gap  for freshness check
 const ENTRY_EVAL_INTERVAL_MS = 500; // 500ms -- catch fast gaps
 
 // Circuit breaker
@@ -695,6 +697,9 @@ async function tradingLoop() {
             lastAction = `Scalp sold ${pos.asset} @ $${sellPrice.toFixed(2)}`;
             lastActionTime = new Date().toISOString();
 
+            lastScalpTradeTime = now;
+            prevBestGap = 0;
+
             scalpPositions.splice(i, 1);
             continue;
           }
@@ -786,6 +791,9 @@ async function tradingLoop() {
         broadcastLog(`${exitSignal.action === "sell_profit" ? "Profit exit" : "Exit window"}: ${pos.side.toUpperCase()} @ $${sellPrice.toFixed(2)} | P&L: $${pnl.toFixed(4)}`);
         addAlert(pnl >= 0 ? "success" : "warning", `Scalp ${pnl >= 0 ? "profit" : "exit"} @ $${sellPrice.toFixed(2)}`, pos.asset);
 
+        lastScalpTradeTime = now; // start 30s cooldown
+        prevBestGap = 0; // reset gap freshness
+
         scalpPositions.splice(i, 1);
         continue;
       } else if (exitSignal.action === "hold_resolution") {
@@ -875,17 +883,23 @@ async function tradingLoop() {
             : settings.scalpTradeSize;
           if (capital.available < effectiveTradeSize) continue;
 
-          const btcDelta = getBtcDelta(30_000); // $ change in last 30 seconds (for velocity)
+          const btcDelta30 = getBtcDelta(30_000);
+          const btcDelta5 = getBtcDelta(5_000);
           const btcPrice = getBinancePrice();
-          const trend = getBtcTrend(30 * 60_000); // 30 min trend
+          const trend = getBtcTrend(30 * 60_000);
           const signal = evaluateScalpEntry(
             market.yesPrice, market.noPrice,
-            btcDelta, btcPrice,
+            btcDelta30, btcDelta5, btcPrice,
             trend.direction, trend.strength,
             market.secondsRemaining,
             settings.scalpMinGap, settings.scalpEntryMin, settings.scalpEntryMax,
             settings.scalpExitWindow,
+            lastScalpTradeTime, prevBestGap,
           );
+
+          // Track gap for freshness check
+          const fairNow = computeFairValue(market.yesPrice, market.noPrice, btcDelta30, btcPrice, trend.direction, trend.strength, market.secondsRemaining);
+          prevBestGap = Math.max(fairNow.up - market.yesPrice, fairNow.down - market.noPrice);
 
           // Diagnostic log every 15s
           const diagKey = `_diag_${market.asset}`;
@@ -894,11 +908,11 @@ async function tradingLoop() {
             lastLoggedDecision[diagKey] = { reason: "diag", time: now };
             const timeMin = Math.floor(market.secondsRemaining / 60);
             const timeSec = market.secondsRemaining % 60;
-            const deltaStr = btcDelta >= 0 ? `+$${btcDelta.toFixed(0)}` : `-$${Math.abs(btcDelta).toFixed(0)}`;
-            const velStr = `$${(btcDelta / 30).toFixed(1)}/s`;
+            const v30 = (btcDelta30 / 30).toFixed(1);
+            const v5 = (btcDelta5 / 5).toFixed(1);
             const trendStr = trend.direction > 0 ? "UP" : trend.direction < 0 ? "DN" : "--";
-            const fair = computeFairValue(market.yesPrice, market.noPrice, btcDelta, btcPrice, trend.direction, trend.strength, market.secondsRemaining);
-            broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC $${btcPrice.toFixed(0)} (${deltaStr}/30s vel${velStr}) trend${trendStr}${(trend.strength * 100).toFixed(0)}% | UP $${market.yesPrice.toFixed(2)} fair $${fair.up.toFixed(2)} | DN $${market.noPrice.toFixed(2)} fair $${fair.down.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+`);
+            const cooldownLeft = lastScalpTradeTime > 0 ? Math.max(0, 30 - Math.round((now - lastScalpTradeTime) / 1000)) : 0;
+            broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} | BTC $${btcPrice.toFixed(0)} v30=$${v30} v5=$${v5} ${trendStr}${(trend.strength * 100).toFixed(0)}% | UP $${market.yesPrice.toFixed(2)} fair $${fairNow.up.toFixed(3)} | DN $${market.noPrice.toFixed(2)} fair $${fairNow.down.toFixed(3)} | gap ${(prevBestGap * 100).toFixed(1)}c${cooldownLeft > 0 ? ` | CD ${cooldownLeft}s` : ""}`);
           }
 
           if (signal) {

@@ -157,7 +157,8 @@ export interface ScalpEntrySignal {
 export function evaluateScalpEntry(
   yesPrice: number,
   noPrice: number,
-  btcDelta: number,
+  btcDelta30s: number,
+  btcDelta5s: number,
   btcPrice: number,
   trendDirection: number,
   trendStrength: number,
@@ -166,27 +167,52 @@ export function evaluateScalpEntry(
   entryMin: number,
   entryMax: number,
   exitWindowSecs: number,
+  lastTradeTime: number,
+  prevGap: number,
 ): ScalpEntrySignal | null {
   if (btcPrice <= 0) return null;
 
-  // Only guard: don't enter if we'd have to exit immediately
+  // Guard 1: don't enter if we'd have to exit immediately
   if (secondsRemaining <= exitWindowSecs) return null;
 
+  // Guard 2: Post-trade cooldown -- 30s after any sell.
+  // Prevents instant re-buy on stale velocity data after a profit exit.
+  const now = Date.now();
+  if (lastTradeTime > 0 && now - lastTradeTime < 30_000) return null;
+
+  // Guard 3: Minimum velocity magnitude -- need real BTC movement, not noise.
+  const velocity30s = btcDelta30s / 30; // $/sec over last 30s
+  if (Math.abs(velocity30s) < 1.0) return null;
+
+  // Guard 4: Acceleration gate -- short-term (5s) must agree with medium-term (30s).
+  // If 30s says UP but 5s says DOWN, BTC is reversing. Block entry.
+  const velocity5s = btcDelta5s / 5; // $/sec over last 5s
+  const dir30 = velocity30s > 0 ? 1 : velocity30s < 0 ? -1 : 0;
+  const dir5 = velocity5s > 0 ? 1 : velocity5s < 0 ? -1 : 0;
+  if (dir30 !== 0 && dir5 !== 0 && dir30 !== dir5) return null;
+
   const fair = computeFairValue(
-    yesPrice, noPrice, btcDelta, btcPrice,
+    yesPrice, noPrice, btcDelta30s, btcPrice,
     trendDirection, trendStrength, secondsRemaining
   );
 
   const upGap = fair.up - yesPrice;
   const downGap = fair.down - noPrice;
 
-  const upValid = upGap >= minGap && yesPrice >= entryMin && yesPrice <= entryMax;
-  const downValid = downGap >= minGap && noPrice >= entryMin && noPrice <= entryMax;
+  // Guard 5: Cap maximum gap -- if gap > 8 cents, data is stale or extreme vol
+  const MAX_GAP = 0.08;
 
-  if (!upValid && !downValid) return null;
+  // Guard 6: Gap freshness -- gap must be growing (larger than previous).
+  // If gap is same or shrinking, the market already absorbed the move.
+  const bestGap = Math.max(upGap, downGap);
+  const gapGrowing = bestGap > prevGap + 0.002; // must be at least 0.2c larger
+
+  const upValid = upGap >= minGap && upGap <= MAX_GAP && yesPrice >= entryMin && yesPrice <= entryMax;
+  const downValid = downGap >= minGap && downGap <= MAX_GAP && noPrice >= entryMin && noPrice <= entryMax;
+
+  if ((!upValid && !downValid) || !gapGrowing) return null;
 
   const trendStr = trendDirection > 0 ? "UP" : trendDirection < 0 ? "DN" : "--";
-  const vel = (btcDelta / 30).toFixed(1);
 
   if (upValid && (!downValid || upGap >= downGap)) {
     return {
@@ -194,7 +220,7 @@ export function evaluateScalpEntry(
       fairValue: fair.up,
       actualPrice: yesPrice,
       gap: upGap,
-      reason: `UP $${yesPrice.toFixed(2)} -> fair $${fair.up.toFixed(2)} (+${(upGap * 100).toFixed(1)}c) vel $${vel}/s trend${trendStr}`,
+      reason: `UP $${yesPrice.toFixed(2)} -> $${fair.up.toFixed(2)} (+${(upGap * 100).toFixed(1)}c) v30=$${velocity30s.toFixed(1)} v5=$${velocity5s.toFixed(1)} ${trendStr}`,
     };
   }
 
@@ -204,7 +230,7 @@ export function evaluateScalpEntry(
       fairValue: fair.down,
       actualPrice: noPrice,
       gap: downGap,
-      reason: `DN $${noPrice.toFixed(2)} -> fair $${fair.down.toFixed(2)} (+${(downGap * 100).toFixed(1)}c) vel $${vel}/s trend${trendStr}`,
+      reason: `DN $${noPrice.toFixed(2)} -> $${fair.down.toFixed(2)} (+${(downGap * 100).toFixed(1)}c) v30=$${velocity30s.toFixed(1)} v5=$${velocity5s.toFixed(1)} ${trendStr}`,
     };
   }
 
