@@ -1019,7 +1019,8 @@ async function tradingLoop() {
                 broadcastLog(`Market buy FILLED: ${signal.side.toUpperCase()} ${fillShares.toFixed(1)} @ $${fillPrice.toFixed(2)} | target $${sellTarget.toFixed(2)}`);
                 addAlert("info", `Scalp buy: ${signal.side.toUpperCase()} @ $${fillPrice.toFixed(2)}`, market.asset);
               } else {
-                broadcastLog(`Market buy FAILED: ${result.error || "unknown"}`);
+                broadcastLog(`Market buy FAILED: ${result.error || "unknown"} | ${signal.side.toUpperCase()} ${shares} @ $${signal.actualPrice.toFixed(2)}`);
+                addAlert("warning", `Buy failed: ${result.error || "unknown"}`, market.asset);
               }
             }
 
