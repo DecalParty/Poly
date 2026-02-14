@@ -119,7 +119,9 @@ export function getReadOnlyClient(): ClobClient {
 
 /**
  * Place a buy order on Polymarket with spread-crossing price.
- * Bumps price above midpoint to cross the spread and fill as a taker.
+ * Bumps price well above midpoint to cross the real ask and fill as a taker.
+ * Prices from the scanner are midpoints, not asks — the actual ask is typically
+ * 1-3¢ above midpoint, so we bump by 3¢ to reliably cross.
  * Verifies actual fill before returning success.
  */
 export async function placeBuyOrder(
@@ -135,16 +137,22 @@ export async function placeBuyOrder(
   }
 
   try {
-    // Bump price up by 1 cent to cross the spread and fill as taker
-    const tick = parseFloat(tickSize) || 0.01;
-    const crossPrice = Math.min(0.99, Math.round((price + 0.01) / tick) * tick);
+    // Round size to 2 decimal places (CLOB requirement)
+    const roundedSize = Math.floor(size * 100) / 100;
+    if (roundedSize <= 0) {
+      return { success: false, error: `Size too small after rounding: ${size}` };
+    }
 
-    logger.info(`[LIVE] BUY: ${size.toFixed(4)} shares @ $${crossPrice.toFixed(4)} (mid=$${price.toFixed(4)}) | token=${tokenId.slice(0, 10)}...`);
+    // Bump price up by 3 cents to cross the real ask (prices are midpoints)
+    const tick = parseFloat(tickSize) || 0.01;
+    const crossPrice = Math.min(0.99, Math.round((price + 0.03) / tick) * tick);
+
+    logger.info(`[LIVE] BUY: ${roundedSize.toFixed(2)} shares @ $${crossPrice.toFixed(4)} (mid=$${price.toFixed(4)}) | token=${tokenId.slice(0, 10)}...`);
     const result = await client.createAndPostOrder({
       tokenID: tokenId,
       price: crossPrice,
       side: Side.BUY,
-      size,
+      size: roundedSize,
       feeRateBps: undefined,
       nonce: undefined,
       expiration: undefined,
@@ -158,8 +166,8 @@ export async function placeBuyOrder(
       return { success: false, error: "No orderId returned from Polymarket" };
     }
 
-    // Verify fill
-    const fillResult = await waitForOrderFill(orderId, 8000, 500);
+    // Verify fill — taker orders should fill near-instantly, 4s is generous
+    const fillResult = await waitForOrderFill(orderId, 4000, 400);
 
     if (!fillResult.filled || fillResult.sizeFilled <= 0) {
       // Cancel the unfilled order so it doesn't fill later as a ghost trade
@@ -192,7 +200,9 @@ export async function placeBuyOrder(
 
 /**
  * Place a sell order on Polymarket with spread-crossing price.
- * Drops price below midpoint to cross the spread and fill as a taker.
+ * Drops price well below midpoint to cross the real bid and fill as a taker.
+ * Prices from the scanner are midpoints, not bids — the actual bid is typically
+ * 1-3¢ below midpoint, so we drop by 3¢ to reliably cross.
  * Verifies actual fill before returning success.
  */
 export async function placeSellOrder(
@@ -208,16 +218,22 @@ export async function placeSellOrder(
   }
 
   try {
-    // Drop price by 1 cent to cross the spread and fill as taker
-    const tick = parseFloat(tickSize) || 0.01;
-    const crossPrice = Math.max(0.01, Math.round((price - 0.01) / tick) * tick);
+    // Round size to 2 decimal places (CLOB requirement)
+    const roundedShares = Math.floor(shares * 100) / 100;
+    if (roundedShares <= 0) {
+      return { success: false, error: `Size too small after rounding: ${shares}` };
+    }
 
-    logger.info(`[LIVE] SELL: ${shares.toFixed(4)} shares @ $${crossPrice.toFixed(4)} (mid=$${price.toFixed(4)}) | token=${tokenId.slice(0, 10)}...`);
+    // Drop price by 3 cents to cross the real bid (prices are midpoints)
+    const tick = parseFloat(tickSize) || 0.01;
+    const crossPrice = Math.max(0.01, Math.round((price - 0.03) / tick) * tick);
+
+    logger.info(`[LIVE] SELL: ${roundedShares.toFixed(2)} shares @ $${crossPrice.toFixed(4)} (mid=$${price.toFixed(4)}) | token=${tokenId.slice(0, 10)}...`);
     const result = await client.createAndPostOrder({
       tokenID: tokenId,
       price: crossPrice,
       side: Side.SELL,
-      size: shares,
+      size: roundedShares,
       feeRateBps: undefined,
       nonce: undefined,
       expiration: undefined,
@@ -231,8 +247,8 @@ export async function placeSellOrder(
       return { success: false, error: "No orderId returned from Polymarket" };
     }
 
-    // Verify fill
-    const fillResult = await waitForOrderFill(orderId, 8000, 500);
+    // Verify fill — taker orders should fill near-instantly, 4s is generous
+    const fillResult = await waitForOrderFill(orderId, 4000, 400);
 
     if (!fillResult.filled || fillResult.sizeFilled <= 0) {
       // Cancel the unfilled order so it doesn't fill later as a ghost trade
@@ -491,11 +507,20 @@ export async function waitForOrderFill(
     await new Promise(r => setTimeout(r, pollIntervalMs));
   }
 
-  // Timeout — return whatever we have
+  // Timeout — if we have partial fills, treat as filled (don't discard real fills)
+  if (lastStatus && lastStatus.sizeFilled > 0) {
+    logger.info(`[FILL] Timeout but partial fill found: ${lastStatus.sizeFilled} shares @ $${lastStatus.price}`);
+    return {
+      filled: true,
+      sizeFilled: lastStatus.sizeFilled,
+      avgPrice: lastStatus.price,
+      status: lastStatus.status,
+    };
+  }
   return {
-    filled: lastStatus ? lastStatus.sizeFilled > 0 : false,
-    sizeFilled: lastStatus?.sizeFilled || 0,
-    avgPrice: lastStatus?.price || 0,
+    filled: false,
+    sizeFilled: 0,
+    avgPrice: 0,
     status: lastStatus?.status || "timeout",
   };
 }

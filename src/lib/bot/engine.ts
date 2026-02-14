@@ -922,9 +922,9 @@ async function tradingLoop() {
             broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} | BTC $${btcPrice.toFixed(0)} v30=$${v30} v5=$${v5} ${trendStr}${(trend.strength * 100).toFixed(0)}% | UP $${market.yesPrice.toFixed(2)} fair $${fairNow.up.toFixed(3)} | DN $${market.noPrice.toFixed(2)} fair $${fairNow.down.toFixed(3)} | gap ${(prevBestGap * 100).toFixed(1)}c${cooldownLeft > 0 ? ` | CD ${cooldownLeft}s` : ""}`);
           }
 
-          if (signal) {
+            if (signal) {
             const tokenId = signal.side === "yes" ? market.yesTokenId : market.noTokenId;
-            const shares = effectiveTradeSize / signal.actualPrice;
+            const shares = Math.floor((effectiveTradeSize / signal.actualPrice) * 100) / 100;
             const windowTs = parseInt(market.slug.split("-").pop() || "0", 10);
 
             if (settings.paperTrading) {
