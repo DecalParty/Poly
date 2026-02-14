@@ -194,7 +194,7 @@ function ensurePriceBroadcast() {
     const btcMarket = Object.values(activeMarketsRecord).find(m => m.asset === "BTC");
     const dashYes = btcMarket?.yesPrice ?? 0.50;
     const dashNo = btcMarket?.noPrice ?? 0.50;
-    const dashDelta = getBtcDelta(3_000);
+    const dashDelta = getBtcDelta(30_000);
     const dashTrend = getBtcTrend(30 * 60_000);
     const dashSecsRemaining = btcMarket?.secondsRemaining ?? 450;
     const fair = computeFairValue(dashYes, dashNo, dashDelta, getBinancePrice(), dashTrend.direction, dashTrend.strength, dashSecsRemaining);
@@ -455,7 +455,7 @@ export function getState(): BotState {
   const statusBtcMarket = statusActiveMarkets.find(m => m.asset === "BTC");
   const sYes = statusBtcMarket?.yesPrice ?? 0.50;
   const sNo = statusBtcMarket?.noPrice ?? 0.50;
-  const sDelta = getBtcDelta(3_000);
+  const sDelta = getBtcDelta(30_000);
   const sTrend = getBtcTrend(30 * 60_000);
   const fair = computeFairValue(sYes, sNo, sDelta, getBinancePrice(), sTrend.direction, sTrend.strength, displaySecsRemaining);
 
@@ -788,13 +788,8 @@ async function tradingLoop() {
           takerFee: 0,
         });
 
-        broadcastLog(`${exitSignal.action === "sell_profit" ? "Profit exit" : "Loss cut"}: ${pos.side.toUpperCase()} @ $${sellPrice.toFixed(2)} | P&L: $${pnl.toFixed(4)}`);
-        addAlert(pnl >= 0 ? "success" : "warning", `Scalp ${exitSignal.action === "sell_profit" ? "profit" : "loss"} @ $${sellPrice.toFixed(2)}`, pos.asset);
-
-        if (pnl < 0) {
-          const currentWindowStart = Math.floor(now / 1000 / 900) * 900;
-          cooldownUntilWindow = currentWindowStart + 900 * settings.scalpCooldownWindows;
-        }
+        broadcastLog(`${exitSignal.action === "sell_profit" ? "Profit exit" : "Exit window"}: ${pos.side.toUpperCase()} @ $${sellPrice.toFixed(2)} | P&L: $${pnl.toFixed(4)}`);
+        addAlert(pnl >= 0 ? "success" : "warning", `Scalp ${pnl >= 0 ? "profit" : "exit"} @ $${sellPrice.toFixed(2)}`, pos.asset);
 
         scalpPositions.splice(i, 1);
         continue;
@@ -900,7 +895,7 @@ async function tradingLoop() {
           // Don't enter too close to end
           if (market.secondsRemaining < 180) continue;
 
-          const btcDelta = getBtcDelta(3_000); // $ change in last 3 seconds (unreflected by Polymarket)
+          const btcDelta = getBtcDelta(30_000); // $ change in last 30 seconds (for velocity)
           const btcPrice = getBinancePrice();
           const trend = getBtcTrend(30 * 60_000); // 30 min trend
           const signal = evaluateScalpEntry(
@@ -919,9 +914,10 @@ async function tradingLoop() {
             const timeMin = Math.floor(market.secondsRemaining / 60);
             const timeSec = market.secondsRemaining % 60;
             const deltaStr = btcDelta >= 0 ? `+$${btcDelta.toFixed(0)}` : `-$${Math.abs(btcDelta).toFixed(0)}`;
+            const velStr = `$${(btcDelta / 30).toFixed(1)}/s`;
             const trendStr = trend.direction > 0 ? "UP" : trend.direction < 0 ? "DN" : "--";
             const fair = computeFairValue(market.yesPrice, market.noPrice, btcDelta, btcPrice, trend.direction, trend.strength, market.secondsRemaining);
-            broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC $${btcPrice.toFixed(0)} (${deltaStr}/3s) trend${trendStr}${(trend.strength * 100).toFixed(0)}% | UP $${market.yesPrice.toFixed(2)} fair $${fair.up.toFixed(2)} | DOWN $${market.noPrice.toFixed(2)} fair $${fair.down.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+`);
+            broadcastLog(`[${market.asset}] ${timeMin}:${timeSec.toString().padStart(2, "0")} left | BTC $${btcPrice.toFixed(0)} (${deltaStr}/30s vel${velStr}) trend${trendStr}${(trend.strength * 100).toFixed(0)}% | UP $${market.yesPrice.toFixed(2)} fair $${fair.up.toFixed(2)} | DN $${market.noPrice.toFixed(2)} fair $${fair.down.toFixed(2)} | Need ${settings.scalpMinGap.toFixed(2)}+`);
           }
 
           if (signal) {

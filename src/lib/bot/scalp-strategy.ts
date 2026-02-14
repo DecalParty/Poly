@@ -1,24 +1,21 @@
 /**
- * Scalp Strategy -- Derived Fair Value
+ * Scalp Strategy -- Predictive Fair Value
  *
- * Uses ALL available data to compute fair UP/DOWN prices:
- * 1. BTC price from Bitbo (slightly ahead of Polymarket)
- * 2. Current Polymarket prices (to derive the window-open price)
- * 3. Time remaining in the window
- * 4. 30min BTC trend (momentum confirmation)
+ * Uses ALL available data to PREDICT where Polymarket prices are heading:
+ * 1. BTC price from Bitbo (1-2s ahead of Polymarket)
+ * 2. BTC velocity ($/sec over last 30-60s) to project forward
+ * 3. Current Polymarket prices (to derive window-open price)
+ * 4. Time remaining in window
+ * 5. 30min BTC trend (momentum confirmation)
  *
- * Algorithm:
- * - REVERSE the fair value table using Polymarket's prices to find the
- *   implied BTC % change and derive the window-open price
- * - FORWARD compute fair values using Bitbo's current BTC price
- * - COMPARE our fair values to market prices -> gap = opportunity
- *
- * This solves the window-open mismatch problem (we derive it from
- * Polymarket itself) while still benefiting from Bitbo's leading price.
+ * KEY FIX: Previous algorithm was circular (derived open from btcPrice,
+ * then recomputed change using same btcPrice = always same result).
+ * Now we PROJECT btcPrice forward by velocity to break the circularity.
+ * If BTC is rising at $3/sec, we project 3 seconds ahead. This predicts
+ * where Polymarket WILL be, not where it IS.
  */
 
 // -- Fair Value Table ---------------------------------------------------------
-// Maps absolute BTC % change -> fair value for the WINNING side.
 const FAIR_VALUE_TABLE = [
   { change: 0.0000, value: 0.500 },
   { change: 0.0003, value: 0.505 },
@@ -35,7 +32,6 @@ const FAIR_VALUE_TABLE = [
   { change: 0.0150, value: 0.970 },
 ];
 
-/** Forward lookup: abs BTC % change -> raw fair value for winning side */
 function interpolate(absChange: number): number {
   const table = FAIR_VALUE_TABLE;
   if (absChange <= table[0].change) return table[0].value;
@@ -51,7 +47,6 @@ function interpolate(absChange: number): number {
   return table[table.length - 1].value;
 }
 
-/** Reverse lookup: raw fair value -> abs BTC % change */
 function reverseInterpolate(fairValue: number): number {
   const table = FAIR_VALUE_TABLE;
   if (fairValue <= table[0].value) return table[0].change;
@@ -67,20 +62,30 @@ function reverseInterpolate(fairValue: number): number {
   return table[table.length - 1].change;
 }
 
-/** Time factor: how much of the raw fair value deviation to apply */
 function getTimeFactor(secondsRemaining: number): number {
   const elapsed = Math.max(0, 900 - secondsRemaining);
   return Math.sqrt(Math.min(1, elapsed / 900));
 }
 
+// How many seconds ahead to project BTC price using velocity.
+// Larger = more aggressive predictions, more trades, more risk.
+// 10s lookahead: if BTC moving $5/sec, projects $50 ahead.
+const LOOKAHEAD_SECONDS = 10;
+
 /**
- * Compute fair values by deriving window-open from Polymarket prices,
- * then re-computing using Bitbo's current BTC price.
+ * Compute predictive fair values.
+ *
+ * @param btcDelta - BTC $ change over last 30s (used to compute velocity)
+ * @param btcPrice - current BTC price from Bitbo
+ *
+ * The trick: derive the window-open from Polymarket's current prices + btcPrice,
+ * then compute fair value using a PROJECTED btcPrice (current + velocity * lookahead).
+ * This breaks the circular math and creates a real gap when BTC is moving.
  */
 export function computeFairValue(
   yesPrice: number,
   noPrice: number,
-  btcDelta: number, // kept for signature compat, not used directly
+  btcDelta: number,
   btcPrice: number,
   trendDirection: number,
   trendStrength: number,
@@ -91,51 +96,48 @@ export function computeFairValue(
   }
 
   const timeFactor = getTimeFactor(secondsRemaining);
-  if (timeFactor < 0.05) return { up: yesPrice, down: noPrice }; // too early, no confidence
+  if (timeFactor < 0.05) return { up: yesPrice, down: noPrice };
 
-  // -- Step 1: Determine which side is winning and the winning price --
+  // -- Step 1: Derive window-open from market prices --
   const downWinning = noPrice > yesPrice;
   const winningPrice = downWinning ? noPrice : yesPrice;
 
-  // -- Step 2: Reverse the table to get implied BTC % change --
-  // winningPrice = 0.50 + (rawFair - 0.50) * timeFactor
-  // -> rawFair = 0.50 + (winningPrice - 0.50) / timeFactor
   const rawFairImplied = 0.50 + (winningPrice - 0.50) / timeFactor;
   const clampedRawFair = Math.max(0.50, Math.min(0.97, rawFairImplied));
   const impliedAbsChange = reverseInterpolate(clampedRawFair);
 
-  // -- Step 3: Derive window-open price --
-  // If DOWN is winning, BTC dropped: open = btcPrice / (1 - impliedChange)
-  // If UP is winning, BTC rose: open = btcPrice / (1 + impliedChange)
-  // But we use the MARKET-implied change with a reference price.
-  // The market sees a slightly older BTC price. We use Bitbo's current.
   const derivedOpen = downWinning
     ? btcPrice / (1 - impliedAbsChange)
     : btcPrice / (1 + impliedAbsChange);
 
-  // -- Step 4: Compute actual BTC % change using Bitbo's current price --
-  const actualChange = (btcPrice - derivedOpen) / derivedOpen;
-  const actualAbsChange = Math.abs(actualChange);
+  // -- Step 2: Project BTC forward using velocity --
+  // btcDelta is the $ change over the last 30 seconds.
+  // velocity = btcDelta / 30 seconds -> project forward by LOOKAHEAD_SECONDS
+  const velocity = btcDelta / 30; // $/sec
+  const projectedBtc = btcPrice + velocity * LOOKAHEAD_SECONDS;
 
-  // -- Step 5: Forward lookup -> fair value for winning side --
-  const rawFairActual = interpolate(actualAbsChange);
+  // -- Step 3: Compute fair value using PROJECTED price --
+  const projectedChange = (projectedBtc - derivedOpen) / derivedOpen;
+  const projectedAbsChange = Math.abs(projectedChange);
+  const rawFairProjected = interpolate(projectedAbsChange);
 
-  // -- Step 6: Apply time factor + trend --
+  // -- Step 4: Trend boost --
   let trendBoost = 1.0;
-  const actualDir = actualChange > 0 ? 1 : actualChange < 0 ? -1 : 0;
-  if (actualDir !== 0 && trendDirection !== 0) {
-    if (actualDir === trendDirection) {
-      trendBoost = 1.0 + 0.3 * trendStrength; // trend confirms: up to 1.3x
+  const projDir = projectedChange > 0 ? 1 : projectedChange < 0 ? -1 : 0;
+  if (projDir !== 0 && trendDirection !== 0) {
+    if (projDir === trendDirection) {
+      trendBoost = 1.0 + 0.3 * trendStrength;
     } else {
-      trendBoost = 1.0 - 0.3 * trendStrength; // trend opposes: down to 0.7x
+      trendBoost = 1.0 - 0.3 * trendStrength;
     }
   }
 
-  const deviation = (rawFairActual - 0.50) * timeFactor * trendBoost;
+  // -- Step 5: Compute final fair values --
+  const deviation = (rawFairProjected - 0.50) * timeFactor * trendBoost;
   const winningFair = Math.max(0.01, Math.min(0.99, 0.50 + deviation));
   const losingFair = Math.max(0.01, Math.min(0.99, 1.0 - winningFair));
 
-  if (actualChange >= 0) {
+  if (projectedChange >= 0) {
     return { up: winningFair, down: losingFair };
   } else {
     return { up: losingFair, down: winningFair };
@@ -152,10 +154,6 @@ export interface ScalpEntrySignal {
   reason: string;
 }
 
-/**
- * Evaluate entry: compare derived fair values to market prices.
- * If a side is undervalued by minGap or more, buy it.
- */
 export function evaluateScalpEntry(
   yesPrice: number,
   noPrice: number,
@@ -185,6 +183,7 @@ export function evaluateScalpEntry(
   if (!upValid && !downValid) return null;
 
   const trendStr = trendDirection > 0 ? "UP" : trendDirection < 0 ? "DN" : "--";
+  const vel = (btcDelta / 30).toFixed(1);
 
   if (upValid && (!downValid || upGap >= downGap)) {
     return {
@@ -192,7 +191,7 @@ export function evaluateScalpEntry(
       fairValue: fair.up,
       actualPrice: yesPrice,
       gap: upGap,
-      reason: `UP $${yesPrice.toFixed(2)} -> fair $${fair.up.toFixed(2)} (+${(upGap * 100).toFixed(1)}c) trend${trendStr}`,
+      reason: `UP $${yesPrice.toFixed(2)} -> fair $${fair.up.toFixed(2)} (+${(upGap * 100).toFixed(1)}c) vel $${vel}/s trend${trendStr}`,
     };
   }
 
@@ -202,7 +201,7 @@ export function evaluateScalpEntry(
       fairValue: fair.down,
       actualPrice: noPrice,
       gap: downGap,
-      reason: `DN $${noPrice.toFixed(2)} -> fair $${fair.down.toFixed(2)} (+${(downGap * 100).toFixed(1)}c) trend${trendStr}`,
+      reason: `DN $${noPrice.toFixed(2)} -> fair $${fair.down.toFixed(2)} (+${(downGap * 100).toFixed(1)}c) vel $${vel}/s trend${trendStr}`,
     };
   }
 
@@ -220,13 +219,14 @@ export interface ScalpExitSignal {
 }
 
 /**
- * Evaluate exit conditions for a spike trade.
+ * Evaluate exit conditions.
  *
- * Simple logic for fast exits:
- * - Profit target hit -> sell
- * - Price dropped too far below entry (stop loss) -> sell
- * - 2 min before window end -> sell at whatever price
- * - Otherwise hold
+ * Only two exits:
+ * - Profit target hit -> sell immediately
+ * - Exit window reached -> sell everything at whatever price
+ *
+ * No stop loss. We trust the algorithm. If the position is down,
+ * it can recover. The exit window is the safety net.
  */
 export function evaluateScalpExit(
   entryPrice: number,
@@ -249,31 +249,14 @@ export function evaluateScalpExit(
     };
   }
 
-  // Stop loss: if price dropped more than 5x the profit target, cut it.
-  // Keep wide -- Polymarket prices bounce. Don't get shaken out of a good position.
-  if (pnl < -(profitTarget * 5)) {
-    return {
-      action: "sell_loss",
-      sellPrice: currentPrice,
-      reason: `Stop loss: $${currentPrice.toFixed(2)} = $${pnl.toFixed(2)} from entry $${entryPrice.toFixed(2)}`,
-    };
-  }
-
-  // Time exit: configurable seconds before window end
+  // Exit window: sell all positions at configured time before window end
   if (secondsRemaining <= exitWindowSecs) {
-    if (pnl > 0) {
-      return {
-        action: "sell_profit",
-        sellPrice: currentPrice,
-        reason: `Time exit (profit): $${currentPrice.toFixed(2)}, +$${pnl.toFixed(2)}, ${secondsRemaining}s left`,
-      };
-    }
     return {
-      action: "sell_loss",
+      action: pnl >= 0 ? "sell_profit" : "sell_loss",
       sellPrice: currentPrice,
-      reason: `Time exit (loss): $${currentPrice.toFixed(2)}, $${pnl.toFixed(2)}, ${secondsRemaining}s left`,
+      reason: `Exit window: $${currentPrice.toFixed(2)}, ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}, ${secondsRemaining}s left`,
     };
   }
 
-  return { action: "hold", reason: `Holding: $${currentPrice.toFixed(2)}, pnl $${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}` };
+  return { action: "hold", reason: `Holding: $${currentPrice.toFixed(2)}, pnl ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}` };
 }
