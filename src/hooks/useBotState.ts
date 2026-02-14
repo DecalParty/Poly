@@ -30,7 +30,7 @@ const DEFAULT_STATE: BotState = {
   activeMarkets: {},
   positions: {},
   capital: {
-    totalBankroll: 50,
+    totalBankroll: 30,
     deployed: 0,
     available: 30,
     maxExposure: 30,

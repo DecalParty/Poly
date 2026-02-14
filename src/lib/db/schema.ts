@@ -77,6 +77,7 @@ export const settings = sqliteTable("settings", {
   scalpEntryMax: real("scalp_entry_max").notNull().default(0.85),
   scalpCooldownWindows: integer("scalp_cooldown_windows").notNull().default(1),
   scalpExitWindow: integer("scalp_exit_window").notNull().default(120),
+  scalpHalfSizeAfter: integer("scalp_half_size_after").notNull().default(420),
   // Bet sizing
   betAmount: real("bet_amount").notNull().default(2.00),
 });

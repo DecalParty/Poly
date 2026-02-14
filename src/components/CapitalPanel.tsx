@@ -31,7 +31,7 @@ export default function CapitalPanel({ capital, circuitBreaker }: CapitalPanelPr
 
       {/* Compact stats */}
       <div className="grid grid-cols-3 gap-1.5 mb-2">
-        <StatMini label="Bankroll" value={`$${capital.totalBankroll.toFixed(0)}`} />
+        <StatMini label="Max" value={`$${capital.maxExposure.toFixed(0)}`} />
         <StatMini label="Deployed" value={`$${capital.deployed.toFixed(2)}`} color="text-amber-400" />
         <StatMini label="Available" value={`$${capital.available.toFixed(2)}`} color="text-emerald-400" />
       </div>

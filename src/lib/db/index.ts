@@ -275,6 +275,7 @@ export function ensureDb(): Promise<void> {
     addColIfMissing("settings", "scalp_entry_max", "REAL NOT NULL DEFAULT 0.85");
     addColIfMissing("settings", "scalp_cooldown_windows", "INTEGER NOT NULL DEFAULT 1");
     addColIfMissing("settings", "scalp_exit_window", "INTEGER NOT NULL DEFAULT 120");
+    addColIfMissing("settings", "scalp_half_size_after", "INTEGER NOT NULL DEFAULT 420");
 
     // Force scalp defaults to new strategy values
     sqlJsDb.run(`UPDATE settings SET

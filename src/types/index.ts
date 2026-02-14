@@ -24,10 +24,7 @@ export interface BotSettings {
   paperTrading: boolean;
 
   // Capital & risk
-  totalBankroll: number;
   maxTotalExposure: number;
-  perWindowMax: number;
-  maxSimultaneousPositions: number;
   dailyLossLimit: number;
   lossLimit: number;
 
@@ -61,17 +58,14 @@ export interface BotSettings {
   scalpProfitTarget: number;
   scalpEntryMin: number;
   scalpEntryMax: number;
-  scalpCooldownWindows: number;
   scalpExitWindow: number;
+  scalpHalfSizeAfter: number;
 }
 
 export const DEFAULT_SETTINGS: BotSettings = {
   paperTrading: true,
 
-  totalBankroll: 50,
   maxTotalExposure: 30,
-  perWindowMax: 12,
-  maxSimultaneousPositions: 2,
   dailyLossLimit: 10,
   lossLimit: 5,
 
@@ -105,8 +99,8 @@ export const DEFAULT_SETTINGS: BotSettings = {
   scalpProfitTarget: 0.03,
   scalpEntryMin: 0.15,
   scalpEntryMax: 0.85,
-  scalpCooldownWindows: 1,
   scalpExitWindow: 120,
+  scalpHalfSizeAfter: 420,
 };
 
 // ------ Market Data --------------------------------------------------------------------------------------------------------------------------

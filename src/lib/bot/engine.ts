@@ -313,7 +313,7 @@ function getCapitalState(settings: BotSettings): CapitalState {
   const consecutiveWins = getConsecutiveWins();
 
   return {
-    totalBankroll: settings.totalBankroll,
+    totalBankroll: settings.maxTotalExposure,
     deployed,
     available: Math.max(0, settings.maxTotalExposure - deployed),
     maxExposure: settings.maxTotalExposure,
@@ -695,11 +695,6 @@ async function tradingLoop() {
             lastAction = `Scalp sold ${pos.asset} @ $${sellPrice.toFixed(2)}`;
             lastActionTime = new Date().toISOString();
 
-            if (pnl < 0) {
-              const currentWindowStart = Math.floor(now / 1000 / 900) * 900;
-              cooldownUntilWindow = currentWindowStart + 900 * settings.scalpCooldownWindows;
-            }
-
             scalpPositions.splice(i, 1);
             continue;
           }
@@ -846,11 +841,6 @@ async function tradingLoop() {
               });
             }
 
-            if (pnl < 0) {
-              const currentWindowStart = Math.floor(now / 1000 / 900) * 900;
-              cooldownUntilWindow = currentWindowStart + 900 * settings.scalpCooldownWindows;
-            }
-
             scalpPositions.splice(i, 1);
           }
         }
@@ -870,16 +860,6 @@ async function tradingLoop() {
           broadcastLog(`Waiting for Bitbo feed (last update: ${age >= 0 ? age + "s ago" : "never"})`);
         }
       } else {
-      // Gate 2: Cooldown
-      const currentWindowStart = Math.floor(now / 1000 / 900) * 900;
-      if (cooldownUntilWindow > currentWindowStart) {
-        const winsToWait = Math.ceil((cooldownUntilWindow - currentWindowStart) / 900);
-        const lastLog = lastLoggedDecision["_cooldown"];
-        if (!lastLog || now - lastLog.time >= 15000) {
-          lastLoggedDecision["_cooldown"] = { reason: "cooldown", time: now };
-          broadcastLog(`Cooldown: skipping ${winsToWait} more window(s) after loss`);
-        }
-      } else {
         for (const market of activeMarkets) {
           if (!settings.enabledAssets.includes(market.asset)) continue;
 
@@ -890,10 +870,10 @@ async function tradingLoop() {
 
           // Check capital
           const capital = getCapitalState(settings);
-          if (capital.available < settings.scalpTradeSize) continue;
-
-          // Don't enter too close to end
-          if (market.secondsRemaining < 180) continue;
+          const effectiveTradeSize = market.secondsRemaining <= settings.scalpHalfSizeAfter
+            ? settings.scalpTradeSize / 2
+            : settings.scalpTradeSize;
+          if (capital.available < effectiveTradeSize) continue;
 
           const btcDelta = getBtcDelta(30_000); // $ change in last 30 seconds (for velocity)
           const btcPrice = getBinancePrice();
@@ -923,7 +903,7 @@ async function tradingLoop() {
 
           if (signal) {
             const tokenId = signal.side === "yes" ? market.yesTokenId : market.noTokenId;
-            const shares = settings.scalpTradeSize / signal.actualPrice;
+            const shares = effectiveTradeSize / signal.actualPrice;
             const windowTs = parseInt(market.slug.split("-").pop() || "0", 10);
 
             if (settings.paperTrading) {
@@ -938,7 +918,7 @@ async function tradingLoop() {
                 side: signal.side,
                 action: "buy",
                 price: signal.actualPrice,
-                amount: settings.scalpTradeSize,
+                amount: effectiveTradeSize,
                 shares,
                 pnl: null,
                 paper: true,
@@ -959,7 +939,7 @@ async function tradingLoop() {
                 tokenId,
                 entryPrice: signal.actualPrice,
                 shares,
-                costBasis: settings.scalpTradeSize,
+                costBasis: effectiveTradeSize,
                 sellPrice: sellTarget,
                 sellOrderId: null,
                 buyOrderId: posId,
@@ -1026,7 +1006,6 @@ async function tradingLoop() {
             lastActionTime = new Date().toISOString();
           }
         }
-      }
       } // end binanceFresh else
     }
 

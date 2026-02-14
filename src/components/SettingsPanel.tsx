@@ -31,14 +31,11 @@ export default function SettingsPanel({ settings, botStatus, onSave, circuitBrea
         {form.paperTrading ? <button onClick={() => { if (!disabled) setConfirmLive(true); }} disabled={disabled} className="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-red-500/10 text-red-400 border border-red-500/15 hover:bg-red-500/15 transition-all disabled:opacity-30">Go Live</button> : <button onClick={() => { if (!disabled) handleBoolChange("paperTrading", true); }} disabled={disabled} className="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-white/[0.04] text-gray-400 border border-white/[0.06] hover:bg-white/[0.06] transition-all disabled:opacity-30">Switch to Paper</button>}
       </div>
     </Sec>
-    <Sec title="Capital" open={openSections.capital} onToggle={() => toggleSection("capital")} subtitle={`$${form.totalBankroll} bankroll`}>
+    <Sec title="Capital" open={openSections.capital} onToggle={() => toggleSection("capital")} subtitle={`$${form.maxTotalExposure} max`}>
       <div className="grid grid-cols-2 gap-3">
-        <NF label="Total Bankroll" value={form.totalBankroll} field="totalBankroll" onChange={handleNumChange} disabled={disabled} prefix="$" step="5" />
         <NF label="Max Exposure" value={form.maxTotalExposure} field="maxTotalExposure" onChange={handleNumChange} disabled={disabled} prefix="$" step="5" />
-        <NF label="Per Window Max" value={form.perWindowMax} field="perWindowMax" onChange={handleNumChange} disabled={disabled} prefix="$" step="1" />
-        <NF label="Max Positions" value={form.maxSimultaneousPositions} field="maxSimultaneousPositions" onChange={handleNumChange} disabled={disabled} step="1" />
         <NF label="Daily Loss Limit" value={form.dailyLossLimit} field="dailyLossLimit" onChange={handleNumChange} disabled={disabled} prefix="$" step="1" />
-        <NF label="Loss Limit" value={form.lossLimit} field="lossLimit" onChange={handleNumChange} disabled={disabled} step="1" />
+        <NF label="Loss Limit" value={form.lossLimit} field="lossLimit" onChange={handleNumChange} disabled={disabled} suffix="trades" step="1" />
       </div>
     </Sec>
     <Sec title="Markets" open={openSections.markets} onToggle={() => toggleSection("markets")}>
@@ -57,12 +54,12 @@ export default function SettingsPanel({ settings, botStatus, onSave, circuitBrea
           <NF label="Profit Target" value={f.scalpProfitTarget ?? 0.03} field="scalpProfitTarget" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
           <NF label="Entry Min" value={f.scalpEntryMin ?? 0.15} field="scalpEntryMin" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
           <NF label="Entry Max" value={f.scalpEntryMax ?? 0.85} field="scalpEntryMax" onChange={handleNumChange} disabled={disabled} prefix="$" step="0.01" />
-          <NF label="Loss Cooldown" value={f.scalpCooldownWindows ?? 1} field="scalpCooldownWindows" onChange={handleNumChange} disabled={disabled} suffix="win" step="1" />
           <NF label="Exit Window" value={f.scalpExitWindow ?? 120} field="scalpExitWindow" onChange={handleNumChange} disabled={disabled} suffix="sec" step="10" />
+          <NF label="Half Size After" value={f.scalpHalfSizeAfter ?? 420} field="scalpHalfSizeAfter" onChange={handleNumChange} disabled={disabled} suffix="sec left" step="30" />
         </div>
         <div className="rounded-xl bg-white/[0.015] border border-white/[0.04] p-3">
           <p className="text-[10px] text-gray-500 font-semibold mb-1">How it works</p>
-          <p className="text-[10px] text-gray-600 leading-relaxed">Derives fair values from Polymarket prices + Bitbo BTC (1-2s lead) + 30min trend. Market buys when a side is {((f.scalpMinGap ?? 0.02) * 100).toFixed(0)}+ cents undervalued. Market sells at entry + ${(f.scalpProfitTarget ?? 0.03).toFixed(2)}. Stop loss at 2x target. Time exit {f.scalpExitWindow ?? 120}s before resolution.</p>
+          <p className="text-[10px] text-gray-600 leading-relaxed">Predicts fair values using Bitbo BTC velocity + 30min trend. Market buys when a side is {((f.scalpMinGap ?? 0.02) * 100).toFixed(0)}+ cents undervalued. Sells at entry + ${(f.scalpProfitTarget ?? 0.03).toFixed(2)} or at exit window ({f.scalpExitWindow ?? 120}s left). Halves trade size with {Math.floor((f.scalpHalfSizeAfter ?? 420) / 60)}min left.</p>
         </div>
       </div>}
     </Sec>

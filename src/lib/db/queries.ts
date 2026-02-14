@@ -334,10 +334,7 @@ export function getSettings(): BotSettings {
 
   return {
     paperTrading: row.paperTrading,
-    totalBankroll: row.totalBankroll,
     maxTotalExposure: row.maxTotalExposure,
-    perWindowMax: row.perWindowMax,
-    maxSimultaneousPositions: row.maxSimultaneousPositions,
     dailyLossLimit: row.dailyLossLimit,
     lossLimit: row.consecutiveLossLimit,
     enabledAssets,
@@ -363,8 +360,8 @@ export function getSettings(): BotSettings {
     scalpProfitTarget: (row as any).scalpProfitTarget ?? 0.03,
     scalpEntryMin: (row as any).scalpEntryMin ?? 0.15,
     scalpEntryMax: (row as any).scalpEntryMax ?? 0.85,
-    scalpCooldownWindows: (row as any).scalpCooldownWindows ?? 1,
     scalpExitWindow: (row as any).scalpExitWindow ?? 120,
+    scalpHalfSizeAfter: (row as any).scalpHalfSizeAfter ?? 420,
   };
 }
 
@@ -372,10 +369,7 @@ export function updateSettings(s: Partial<BotSettings>): BotSettings {
   const setObj: Record<string, unknown> = {};
 
   if (s.paperTrading !== undefined) setObj.paperTrading = s.paperTrading;
-  if (s.totalBankroll !== undefined) setObj.totalBankroll = s.totalBankroll;
   if (s.maxTotalExposure !== undefined) setObj.maxTotalExposure = s.maxTotalExposure;
-  if (s.perWindowMax !== undefined) setObj.perWindowMax = s.perWindowMax;
-  if (s.maxSimultaneousPositions !== undefined) setObj.maxSimultaneousPositions = s.maxSimultaneousPositions;
   if (s.dailyLossLimit !== undefined) setObj.dailyLossLimit = s.dailyLossLimit;
   if (s.lossLimit !== undefined) setObj.consecutiveLossLimit = s.lossLimit;
   if (s.enabledAssets !== undefined) setObj.enabledAssets = JSON.stringify(s.enabledAssets);
@@ -401,8 +395,8 @@ export function updateSettings(s: Partial<BotSettings>): BotSettings {
   if (s.scalpProfitTarget !== undefined) setObj.scalpProfitTarget = s.scalpProfitTarget;
   if (s.scalpEntryMin !== undefined) setObj.scalpEntryMin = s.scalpEntryMin;
   if (s.scalpEntryMax !== undefined) setObj.scalpEntryMax = s.scalpEntryMax;
-  if (s.scalpCooldownWindows !== undefined) setObj.scalpCooldownWindows = s.scalpCooldownWindows;
   if (s.scalpExitWindow !== undefined) setObj.scalpExitWindow = s.scalpExitWindow;
+  if ((s as any).scalpHalfSizeAfter !== undefined) (setObj as any).scalpHalfSizeAfter = (s as any).scalpHalfSizeAfter;
 
   if (Object.keys(setObj).length > 0) {
     db.update(schema.settings)
