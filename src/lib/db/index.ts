@@ -277,6 +277,17 @@ export function ensureDb(): Promise<void> {
     addColIfMissing("settings", "scalp_exit_window", "INTEGER NOT NULL DEFAULT 120");
     addColIfMissing("settings", "scalp_half_size_after", "INTEGER NOT NULL DEFAULT 420");
 
+    // Value strategy columns
+    addColIfMissing("settings", "value_enabled", "INTEGER NOT NULL DEFAULT 1");
+    addColIfMissing("settings", "value_trade_size", "REAL NOT NULL DEFAULT 15");
+    addColIfMissing("settings", "value_max_positions", "INTEGER NOT NULL DEFAULT 1");
+    addColIfMissing("settings", "value_min_gap", "REAL NOT NULL DEFAULT 0.03");
+    addColIfMissing("settings", "value_profit_target", "REAL NOT NULL DEFAULT 0.03");
+    addColIfMissing("settings", "value_entry_min", "REAL NOT NULL DEFAULT 0.20");
+    addColIfMissing("settings", "value_entry_max", "REAL NOT NULL DEFAULT 0.80");
+    addColIfMissing("settings", "value_exit_window", "INTEGER NOT NULL DEFAULT 60");
+    addColIfMissing("settings", "value_max_seconds_remaining", "INTEGER NOT NULL DEFAULT 480");
+
     // Force scalp defaults to new strategy values
     sqlJsDb.run(`UPDATE settings SET
       scalp_min_gap = 0.02,

@@ -78,6 +78,16 @@ export const settings = sqliteTable("settings", {
   scalpCooldownWindows: integer("scalp_cooldown_windows").notNull().default(1),
   scalpExitWindow: integer("scalp_exit_window").notNull().default(120),
   scalpHalfSizeAfter: integer("scalp_half_size_after").notNull().default(420),
+  // Value strategy (late-window fair probability)
+  valueEnabled: integer("value_enabled", { mode: "boolean" }).notNull().default(true),
+  valueTradeSize: real("value_trade_size").notNull().default(15),
+  valueMaxPositions: integer("value_max_positions").notNull().default(1),
+  valueMinGap: real("value_min_gap").notNull().default(0.03),
+  valueProfitTarget: real("value_profit_target").notNull().default(0.03),
+  valueEntryMin: real("value_entry_min").notNull().default(0.20),
+  valueEntryMax: real("value_entry_max").notNull().default(0.80),
+  valueExitWindow: integer("value_exit_window").notNull().default(60),
+  valueMaxSecondsRemaining: integer("value_max_seconds_remaining").notNull().default(480),
   // Bet sizing
   betAmount: real("bet_amount").notNull().default(2.00),
 });
